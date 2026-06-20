@@ -1,0 +1,11 @@
+/* Navbar.css */
+
+/* Hide scrollbar utility class inside navbar and headers */
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Safari and Chrome */
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}

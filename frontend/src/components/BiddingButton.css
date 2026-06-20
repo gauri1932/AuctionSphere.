@@ -1,0 +1,8 @@
+/* BiddingButton.css */
+
+/* Component specific styles for live interactive bidding buttons */
+.bidding-button-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}

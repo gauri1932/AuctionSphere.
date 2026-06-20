@@ -1,0 +1,49 @@
+/* TeamHubPage.css */
+
+/* Franchise selector grid layout entries */
+.team-select-card {
+  transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.team-select-card:hover {
+  transform: translateY(-4px) scale(1.02);
+  border-color: rgba(245, 166, 35, 0.4);
+  box-shadow: 0 10px 25px rgba(245, 166, 35, 0.15);
+}
+
+/* Scrollable container styling for competitor grids and pipelines */
+.custom-scroll-container::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+.custom-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: #F5A623;
+}
+
+/* Glass panel glow animation for selected active team dashboard */
+.active-squad-glow {
+  box-shadow: 0 0 35px rgba(245, 166, 35, 0.08);
+  border-color: rgba(245, 166, 35, 0.15) !important;
+}
+
+/* Animations */
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.4s ease-out forwards;
+}

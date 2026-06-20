@@ -1,0 +1,6 @@
+/* SummaryPage.css */
+
+/* Page-specific overrides for Summary stats & standings tables */
+.summary-table-header {
+  letter-spacing: 0.1em;
+}

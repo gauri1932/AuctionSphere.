@@ -1,0 +1,6 @@
+/* CategoryPage.css */
+
+/* Page-specific overrides for category statistics dashboard */
+.category-progress-gauge {
+  transition: width 0.5s ease-in-out;
+}

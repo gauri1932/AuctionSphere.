@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary-dark: #0d1b2a;
+  --color-secondary-dark: #1b263b;
+  --color-accent-gold: #F5A623;
+  --color-gold-hover: #D98E16;
+  --color-cricket-green: #1b5e20;
+  --color-cricket-dark: #0d3611;
+  --color-glass-bg: rgba(13, 27, 42, 0.75);
+  
+  --font-sporty: 'Bebas Neue', sans-serif;
+  --font-sans: 'DM Sans', sans-serif;
+}
+
+body {
+  background-color: #0d1b2a;
+  color: #f8f9fa;
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom Scrollbar for premium tables and rosters */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0d1b2a;
+}
+::-webkit-scrollbar-thumb {
+  background: #1b263b;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #F5A623;
+}
+
+/* Glassmorphism Styles */
+.glass-panel {
+  background: rgba(27, 38, 59, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-panel-glow {
+  box-shadow: 0 0 25px rgba(245, 166, 35, 0.08);
+}
+
+/* Bebas font utilities */
+.font-sporty {
+  font-family: 'Bebas Neue', sans-serif;
+  letter-spacing: 0.05em;
+}
+
+/* Glow effects */
+.glow-gold {
+  box-shadow: 0 0 15px rgba(245, 166, 35, 0.35);
+}
+
+.text-glow-gold {
+  text-shadow: 0 0 10px rgba(245, 166, 35, 0.6);
+}
+
