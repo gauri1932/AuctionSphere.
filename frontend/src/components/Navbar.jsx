@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import './Navbar.css';
 
 const Navbar = () => {
   const location = useLocation();
+  
+  // Extract roomId from path (e.g. /room/6a72190c...)
+  const match = location.pathname.match(/^\/room\/([^/]+)/);
+  const roomId = match ? match[1] : null;
+
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Monitor fullscreen status
@@ -25,14 +30,24 @@ const Navbar = () => {
     }
   };
 
+  // Hide Navbar completely on the main lobby page
+  if (location.pathname === '/' || !roomId) {
+    return null;
+  }
+
+  const isAdmin = sessionStorage.getItem(`room_admin_${roomId}`) === 'true';
+
   const navItems = [
-    { path: '/', label: 'Auction Page', icon: '🏏' },
-    { path: '/summary', label: 'Summary', icon: '📊' },
-    { path: '/players', label: 'Player List', icon: '👥' },
-    { path: '/teams', label: 'Team Hub', icon: '🛡️' },
-    { path: '/category', label: 'Category', icon: '🏷️' },
-    { path: '/manage', label: 'Manage', icon: '⚙️' }
+    { path: `/room/${roomId}`, label: 'Auction Page', icon: '🏏' },
+    { path: `/room/${roomId}/summary`, label: 'Summary', icon: '📊' },
+    { path: `/room/${roomId}/players`, label: 'Player List', icon: '👥' },
+    { path: `/room/${roomId}/teams`, label: 'Team Hub', icon: '🛡️' },
+    { path: `/room/${roomId}/category`, label: 'Category', icon: '🏷️' }
   ];
+
+  if (isAdmin) {
+    navItems.push({ path: `/room/${roomId}/manage`, label: 'Manage', icon: '⚙️' });
+  }
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 glass-panel border-t border-white/10 shadow-[0_-5px_30px_rgba(0,0,0,0.5)]">

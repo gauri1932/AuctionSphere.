@@ -26,9 +26,9 @@ export const DEFAULT_PLAYERS = [
     id: 'mock-1',
     name: 'Virat Kohli',
     category: 'A',
-    basePrice: 1000000, // ₹10,00,000 (10 Lakh)
+    basePrice: 1000000,
     age: 37,
-    status: 'Pending', // Pending, Live, Sold, Unsold
+    status: 'Pending',
     finalPrice: 0,
     winningTeam: null,
     photo: 'https://api.dicebear.com/7.x/avataaars/svg?seed=ViratKohli'
@@ -37,7 +37,7 @@ export const DEFAULT_PLAYERS = [
     id: 'mock-2',
     name: 'Rohit Sharma',
     category: 'A',
-    basePrice: 1000000, // ₹10,00,000 (10 Lakh)
+    basePrice: 1000000,
     age: 39,
     status: 'Pending',
     finalPrice: 0,
@@ -48,7 +48,7 @@ export const DEFAULT_PLAYERS = [
     id: 'mock-3',
     name: 'Jasprit Bumrah',
     category: 'A',
-    basePrice: 1000000, // ₹10,00,000 (10 Lakh)
+    basePrice: 1000000,
     age: 32,
     status: 'Pending',
     finalPrice: 0,
@@ -59,7 +59,7 @@ export const DEFAULT_PLAYERS = [
     id: 'mock-4',
     name: 'Ravindra Jadeja',
     category: 'B',
-    basePrice: 500000, // ₹5,00,000 (5 Lakh)
+    basePrice: 500000,
     age: 37,
     status: 'Pending',
     finalPrice: 0,
@@ -70,7 +70,7 @@ export const DEFAULT_PLAYERS = [
     id: 'mock-5',
     name: 'MS Dhoni',
     category: 'A',
-    basePrice: 1000000, // ₹10,00,000 (10 Lakh)
+    basePrice: 1000000,
     age: 44,
     status: 'Pending',
     finalPrice: 0,
@@ -81,7 +81,7 @@ export const DEFAULT_PLAYERS = [
     id: 'mock-6',
     name: 'Rinku Singh',
     category: 'C',
-    basePrice: 200000, // ₹2,00,000 (2 Lakh)
+    basePrice: 200000,
     age: 28,
     status: 'Pending',
     finalPrice: 0,
@@ -90,7 +90,6 @@ export const DEFAULT_PLAYERS = [
   }
 ];
 
-// Preloaded mock teams with a standard starting budget of ₹1,00,00,000 (1 Crore)
 export const DEFAULT_TEAMS = [
   { id: 'team-1', name: 'Chennai Champions', budget: 10000000, initialBudget: 10000000 },
   { id: 'team-2', name: 'Mumbai Mavericks', budget: 10000000, initialBudget: 10000000 },
@@ -101,8 +100,8 @@ export const DEFAULT_TEAMS = [
 
 export const DEFAULT_AUCTION_STATE = {
   livePlayer: null,
-  liveStatus: 'waiting', // waiting, live, sold, unsold
-  soldInfo: null, // { teamId, teamName, price }
+  liveStatus: 'waiting',
+  soldInfo: null,
   currentBid: 0,
   highestBidder: null,
   bidHistory: []
@@ -111,122 +110,52 @@ export const DEFAULT_AUCTION_STATE = {
 const hostname = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
 const API_URL = `http://${hostname}:5000/api`;
 
-// Initialize/Reset database on boot if forced
-export const initializeDatabase = async (forceReset = false) => {
-  try {
-    if (forceReset) {
-      const res = await fetch(`${API_URL}/system/reset`, { method: 'POST' });
-      return await res.json();
-    }
-    // Check if players list is empty, if so, trigger reset to seed default data
-    const playersRes = await fetch(`${API_URL}/players`);
-    const players = await playersRes.json();
-    if (players.length === 0) {
-      const res = await fetch(`${API_URL}/system/reset`, { method: 'POST' });
-      return await res.json();
-    }
-  } catch (err) {
-    console.error('Failed to initialize database from API:', err);
-  }
+// Helper to extract roomId from active path in URL
+const getRoomIdFromUrl = () => {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/^\/room\/([^/]+)/);
+  return match ? match[1] : null;
 };
 
-// Get all rules
+// Get rules scoped to room
 export const getRules = async () => {
   try {
-    const res = await fetch(`${API_URL}/rules`);
-    return await res.json();
+    const roomId = getRoomIdFromUrl();
+    if (!roomId) return DEFAULT_RULES;
+    const res = await fetch(`${API_URL}/rules?roomId=${roomId}`);
+    const data = await res.json();
+    return data && !data.error ? data : DEFAULT_RULES;
   } catch (err) {
     console.error(err);
     return DEFAULT_RULES;
   }
 };
 
-// Save all rules
-export const saveRules = async (rules) => {
-  try {
-    const res = await fetch(`${API_URL}/rules`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rules)
-    });
-    return await res.json();
-  } catch (err) {
-    console.error(err);
-  }
-};
-
-// Get all players
+// Get players scoped to room
 export const getPlayers = async () => {
   try {
-    const res = await fetch(`${API_URL}/players`);
-    return await res.json();
+    const roomId = getRoomIdFromUrl();
+    if (!roomId) return [];
+    const res = await fetch(`${API_URL}/players?roomId=${roomId}`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
   } catch (err) {
     console.error(err);
     return [];
   }
 };
 
-// Save all players
-export const savePlayers = async (players) => {
-  try {
-    const res = await fetch(`${API_URL}/players`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(players)
-    });
-    return await res.json();
-  } catch (err) {
-    console.error(err);
-  }
-};
-
-// Get all teams
+// Get teams scoped to room
 export const getTeams = async () => {
   try {
-    const res = await fetch(`${API_URL}/teams`);
-    return await res.json();
+    const roomId = getRoomIdFromUrl();
+    if (!roomId) return [];
+    const res = await fetch(`${API_URL}/teams?roomId=${roomId}`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
   } catch (err) {
     console.error(err);
     return [];
-  }
-};
-
-// Save all teams
-export const saveTeams = async (teams) => {
-  try {
-    const res = await fetch(`${API_URL}/teams`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(teams)
-    });
-    return await res.json();
-  } catch (err) {
-    console.error(err);
-  }
-};
-
-// Get live auction state
-export const getAuctionState = async () => {
-  try {
-    const res = await fetch(`${API_URL}/state`);
-    return await res.json();
-  } catch (err) {
-    console.error(err);
-    return DEFAULT_AUCTION_STATE;
-  }
-};
-
-// Save live auction state
-export const saveAuctionState = async (state) => {
-  try {
-    const res = await fetch(`${API_URL}/state`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(state)
-    });
-    return await res.json();
-  } catch (err) {
-    console.error(err);
   }
 };
 
@@ -235,7 +164,6 @@ export const saveAuctionState = async (state) => {
 export const formatRupees = (amount) => {
   if (amount === undefined || amount === null) return '₹0';
   
-  // Format as ₹ XX,XX,XX,XXX (Indian numbering system)
   const amountStr = Math.round(amount).toString();
   let lastThree = amountStr.substring(amountStr.length - 3);
   const otherNumbers = amountStr.substring(0, amountStr.length - 3);
@@ -251,7 +179,6 @@ export const parseCSV = (csvText) => {
   const lines = csvText.split(/\r?\n/);
   if (lines.length <= 1) return [];
 
-  // Parse headers: clean up whitespace
   const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
   
   const results = [];
@@ -260,7 +187,6 @@ export const parseCSV = (csvText) => {
     const line = lines[i].trim();
     if (!line) continue;
     
-    // Parse values taking into account potential quotes
     let values = [];
     let insideQuote = false;
     let currentValue = '';
@@ -278,7 +204,6 @@ export const parseCSV = (csvText) => {
     }
     values.push(currentValue.trim());
     
-    // Match headers to values
     const player = {};
     headers.forEach((header, index) => {
       let rawVal = values[index] ? values[index].replace(/^["']|["']$/g, '') : '';

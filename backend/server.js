@@ -33,13 +33,6 @@ app.get('/', (req, res) => {
     res.send('MPFK BCL 5.0 Auction Backend Running');
 });
 
-// Middleware for authentication handshake
-io.use((socket, next) => {
-    const token = socket.handshake.auth?.token;
-    socket.isAdmin = (token === '1234');
-    next();
-});
-
 // Initialize Socket connection
 io.on('connection', (socket) => {
     auctionHandlers(io, socket);

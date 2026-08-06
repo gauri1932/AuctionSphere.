@@ -1,7 +1,9 @@
+const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const Team = require('../models/Team');
 const Rule = require('../models/Rule');
 const AuctionState = require('../models/AuctionState');
+const Room = require('../models/Room');
 
 const DEFAULT_RULES = {
     basePrices: { A: 1000000, B: 500000, C: 200000 },
@@ -37,35 +39,112 @@ const DEFAULT_AUCTION_STATE = {
 };
 
 module.exports = (io, socket) => {
-    console.log(`New client connected: ${socket.id} (Admin: ${socket.isAdmin})`);
+    console.log(`New client socket connected: ${socket.id}`);
 
-    // Initial state sync on connection
-    (async () => {
+    // Helper to ensure socket has joined a room before running database/broadcast actions
+    const getRoomId = (callback) => {
+        if (!socket.roomId) {
+            if (typeof callback === 'function') callback({ success: false, error: 'Unauthorized: Room not joined.' });
+            return null;
+        }
+        return socket.roomId;
+    };
+
+    // 0. Join Room (Handles authentication and sets admin rights on success)
+    socket.on('joinRoom', async ({ roomId, passkey, clerkToken }, callback) => {
         try {
-            let state = await AuctionState.findOne();
+            if (!roomId || !mongoose.Types.ObjectId.isValid(roomId)) {
+                if (typeof callback === 'function') callback({ success: false, error: 'Invalid room ID.' });
+                return;
+            }
+
+            const room = await Room.findById(roomId);
+            if (!room) {
+                if (typeof callback === 'function') callback({ success: false, error: 'Room not found.' });
+                return;
+            }
+
+            let isAdmin = false;
+            if (clerkToken) {
+                try {
+                    const { verifyToken } = require('@clerk/express');
+                    const decoded = await verifyToken(clerkToken, {
+                        secretKey: process.env.CLERK_SECRET_KEY
+                    });
+                    if (decoded && decoded.sub === room.adminUserId) {
+                        isAdmin = true;
+                    }
+                } catch (jwtErr) {
+                    console.error('Socket JWT verification failed:', jwtErr.message);
+                }
+            }
+
+            // If not verified as admin, check room passkey
+            if (!isAdmin) {
+                if (room.passkey !== passkey) {
+                    if (typeof callback === 'function') callback({ success: false, error: 'Incorrect room passkey.' });
+                    return;
+                }
+            }
+
+            // Leave any previously joined room channels
+            const activeRooms = Array.from(socket.rooms);
+            for (const r of activeRooms) {
+                if (r !== socket.id) {
+                    socket.leave(r);
+                }
+            }
+
+            // Join the specific room channel
+            socket.join(roomId.toString());
+            socket.roomId = roomId.toString();
+            socket.isAdmin = isAdmin;
+
+            // Fetch room state
+            const players = await Player.find({ room: roomId });
+            const teams = await Team.find({ room: roomId });
+            let rules = await Rule.findOne({ room: roomId });
+            if (!rules) {
+                rules = new Rule({ room: roomId, ...DEFAULT_RULES });
+                await rules.save();
+            }
+            let state = await AuctionState.findOne({ room: roomId });
             if (!state) {
-                state = new AuctionState(DEFAULT_AUCTION_STATE);
+                state = new AuctionState({ room: roomId, ...DEFAULT_AUCTION_STATE });
                 await state.save();
             }
-            socket.emit('syncAuctionState', state);
+
+            console.log(`Socket ${socket.id} successfully joined Room ${roomId} (Admin: ${isAdmin})`);
+
+            if (typeof callback === 'function') {
+                callback({
+                    success: true,
+                    data: { players, teams, rules, state },
+                    isAdmin
+                });
+            }
         } catch (err) {
-            console.error('Error syncing socket state:', err);
+            console.error('Error joining socket room:', err);
+            if (typeof callback === 'function') callback({ success: false, error: err.message });
         }
-    })();
+    });
 
     // 1. Fetch initial application dataset
     socket.on('fetchInitialData', async (callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         try {
-            const players = await Player.find();
-            const teams = await Team.find();
-            let rules = await Rule.findOne();
+            const players = await Player.find({ room: roomId });
+            const teams = await Team.find({ room: roomId });
+            let rules = await Rule.findOne({ room: roomId });
             if (!rules) {
-                rules = new Rule(DEFAULT_RULES);
+                rules = new Rule({ room: roomId, ...DEFAULT_RULES });
                 await rules.save();
             }
-            let state = await AuctionState.findOne();
+            let state = await AuctionState.findOne({ room: roomId });
             if (!state) {
-                state = new AuctionState(DEFAULT_AUCTION_STATE);
+                state = new AuctionState({ room: roomId, ...DEFAULT_AUCTION_STATE });
                 await state.save();
             }
             if (typeof callback === 'function') {
@@ -81,6 +160,9 @@ module.exports = (io, socket) => {
 
     // 2. Push Player to Live Stage (Admin restricted)
     socket.on('pushPlayerLive', async (data, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
@@ -88,21 +170,21 @@ module.exports = (io, socket) => {
 
         try {
             const { playerId } = data;
-            const player = await Player.findById(playerId);
+            const player = await Player.findOne({ _id: playerId, room: roomId });
             if (!player) {
-                if (typeof callback === 'function') return callback({ success: false, error: 'Player not found' });
+                if (typeof callback === 'function') return callback({ success: false, error: 'Player not found in this room.' });
                 return;
             }
 
-            // Reset other live players
-            await Player.updateMany({ status: 'Live' }, { status: 'Pending' });
+            // Reset other live players in this room
+            await Player.updateMany({ room: roomId, status: 'Live' }, { status: 'Pending' });
 
             // Set current player live
             player.status = 'Live';
             await player.save();
 
             // Resolve base price
-            const rules = await Rule.findOne() || DEFAULT_RULES;
+            const rules = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
             const configBasePrice = (rules.basePrices && rules.basePrices[player.category] !== undefined)
                 ? rules.basePrices[player.category]
                 : player.basePrice;
@@ -116,19 +198,19 @@ module.exports = (io, socket) => {
                 bidHistory: []
             };
 
-            let state = await AuctionState.findOne();
+            let state = await AuctionState.findOne({ room: roomId });
             if (!state) {
-                state = new AuctionState(newState);
+                state = new AuctionState({ room: roomId, ...newState });
             } else {
                 Object.assign(state, newState);
             }
             await state.save();
 
-            const freshPlayers = await Player.find();
+            const freshPlayers = await Player.find({ room: roomId });
 
-            // Broadcast updates
-            io.emit('playersUpdated', freshPlayers);
-            io.emit('auctionStateUpdated', state);
+            // Broadcast updates to room
+            io.to(roomId).emit('playersUpdated', freshPlayers);
+            io.to(roomId).emit('auctionStateUpdated', state);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: { players: freshPlayers, state } });
@@ -143,9 +225,17 @@ module.exports = (io, socket) => {
 
     // 3. Place Bid
     socket.on('placeBid', async (data, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
+        if (!socket.isAdmin) {
+            if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
+            return;
+        }
+
         try {
             const { teamId, teamName, bidAmount } = data;
-            const state = await AuctionState.findOne();
+            const state = await AuctionState.findOne({ room: roomId });
             if (!state || state.liveStatus !== 'live' || !state.livePlayer) {
                 const errMsg = 'No live auction is active.';
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
@@ -159,9 +249,9 @@ module.exports = (io, socket) => {
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
-            const team = await Team.findById(teamId) || await Team.findOne({ name: teamName });
+            const team = await Team.findOne({ _id: teamId, room: roomId }) || await Team.findOne({ name: teamName, room: roomId });
             if (!team) {
-                const errMsg = 'Team not found.';
+                const errMsg = 'Team not found in this room.';
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
                 return socket.emit('bidRejected', { message: errMsg });
             }
@@ -174,8 +264,8 @@ module.exports = (io, socket) => {
             }
 
             // Check global squad size limit
-            const teamPlayersCount = await Player.countDocuments({ status: 'Sold', winningTeam: team.name });
-            const rule = await Rule.findOne() || DEFAULT_RULES;
+            const teamPlayersCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name });
+            const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
             if (teamPlayersCount >= rule.maxPlayers) {
                 const errMsg = `Max roster limit reached: ${team.name} already has ${rule.maxPlayers} players.`;
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
@@ -184,7 +274,7 @@ module.exports = (io, socket) => {
 
             // Check Category slot limit
             const activePlayerCat = state.livePlayer.category;
-            const teamCatCount = await Player.countDocuments({ status: 'Sold', winningTeam: team.name, category: activePlayerCat });
+            const teamCatCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name, category: activePlayerCat });
             const maxCatSlots = (rule.slots && rule.slots[activePlayerCat]) || 999;
             if (teamCatCount >= maxCatSlots) {
                 const errMsg = `Category Slot limit reached: ${team.name} already has ${teamCatCount} players in Category ${activePlayerCat}.`;
@@ -211,9 +301,9 @@ module.exports = (io, socket) => {
             state.bidHistory.push({ teamId: team._id, teamName: team.name, bidAmount, time: new Date() });
             await state.save();
 
-            // Broadcast updates
-            io.emit('bidAccepted', state);
-            io.emit('auctionStateUpdated', state);
+            // Broadcast updates to room
+            io.to(roomId).emit('bidAccepted', state);
+            io.to(roomId).emit('auctionStateUpdated', state);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: state });
@@ -230,17 +320,20 @@ module.exports = (io, socket) => {
 
     // 3.5. Update Current Bid Price (Admin restricted)
     socket.on('updateCurrentBid', async (data, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
         }
         try {
             const { bidAmount } = data;
-            const state = await AuctionState.findOne();
+            const state = await AuctionState.findOne({ room: roomId });
             if (state) {
                 state.currentBid = bidAmount;
                 await state.save();
-                io.emit('auctionStateUpdated', state);
+                io.to(roomId).emit('auctionStateUpdated', state);
             }
             if (typeof callback === 'function') callback({ success: true, data: state });
         } catch (err) {
@@ -251,6 +344,9 @@ module.exports = (io, socket) => {
 
     // 4. Mark Player Sold (Admin restricted)
     socket.on('markPlayerSold', async (data, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
@@ -258,29 +354,29 @@ module.exports = (io, socket) => {
 
         try {
             const { buyingTeamId, price } = data;
-            const state = await AuctionState.findOne();
+            const state = await AuctionState.findOne({ room: roomId });
             if (!state || !state.livePlayer) {
                 if (typeof callback === 'function') return callback({ success: false, error: 'No live player active.' });
                 return;
             }
 
-            const winningTeam = await Team.findById(buyingTeamId);
+            const winningTeam = await Team.findOne({ _id: buyingTeamId, room: roomId });
             if (!winningTeam) {
-                if (typeof callback === 'function') return callback({ success: false, error: 'Winning franchise not found.' });
+                if (typeof callback === 'function') return callback({ success: false, error: 'Winning franchise not found in this room.' });
                 return;
             }
 
-            const rule = await Rule.findOne() || DEFAULT_RULES;
+            const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
 
             // Roster limit checks
-            const activeCount = await Player.countDocuments({ status: 'Sold', winningTeam: winningTeam.name });
+            const activeCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: winningTeam.name });
             if (activeCount >= rule.maxPlayers) {
                 if (typeof callback === 'function') return callback({ success: false, error: `Roster Lockout: ${winningTeam.name} already reached the limit.` });
                 return;
             }
 
             const activePlayerCat = state.livePlayer.category;
-            const catCount = await Player.countDocuments({ status: 'Sold', winningTeam: winningTeam.name, category: activePlayerCat });
+            const catCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: winningTeam.name, category: activePlayerCat });
             const maxCatSlots = rule.slots?.[activePlayerCat] || 999;
             if (catCount >= maxCatSlots) {
                 if (typeof callback === 'function') return callback({ success: false, error: `Category Roster Full: ${winningTeam.name} category full.` });
@@ -297,7 +393,7 @@ module.exports = (io, socket) => {
             await winningTeam.save();
 
             // Mark Player as Sold
-            const player = await Player.findById(state.livePlayer._id);
+            const player = await Player.findOne({ _id: state.livePlayer._id, room: roomId });
             if (player) {
                 player.status = 'Sold';
                 player.finalPrice = price;
@@ -319,13 +415,13 @@ module.exports = (io, socket) => {
             Object.assign(state, newState);
             await state.save();
 
-            const freshPlayers = await Player.find();
-            const freshTeams = await Team.find();
+            const freshPlayers = await Player.find({ room: roomId });
+            const freshTeams = await Team.find({ room: roomId });
 
-            // Broadcast updates
-            io.emit('playersUpdated', freshPlayers);
-            io.emit('teamsUpdated', freshTeams);
-            io.emit('auctionStateUpdated', state);
+            // Broadcast updates to room
+            io.to(roomId).emit('playersUpdated', freshPlayers);
+            io.to(roomId).emit('teamsUpdated', freshTeams);
+            io.to(roomId).emit('auctionStateUpdated', state);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: { players: freshPlayers, teams: freshTeams, state } });
@@ -340,20 +436,23 @@ module.exports = (io, socket) => {
 
     // 5. Mark Player Unsold (Admin restricted)
     socket.on('markPlayerUnsold', async (callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
         }
 
         try {
-            const state = await AuctionState.findOne();
+            const state = await AuctionState.findOne({ room: roomId });
             if (!state || !state.livePlayer) {
                 if (typeof callback === 'function') return callback({ success: false, error: 'No live player active.' });
                 return;
             }
 
             // Set Player status
-            const player = await Player.findById(state.livePlayer._id);
+            const player = await Player.findOne({ _id: state.livePlayer._id, room: roomId });
             if (player) {
                 player.status = 'Unsold';
                 player.finalPrice = 0;
@@ -367,11 +466,11 @@ module.exports = (io, socket) => {
             state.bidHistory = [];
             await state.save();
 
-            const freshPlayers = await Player.find();
+            const freshPlayers = await Player.find({ room: roomId });
 
-            // Broadcast updates
-            io.emit('playersUpdated', freshPlayers);
-            io.emit('auctionStateUpdated', state);
+            // Broadcast updates to room
+            io.to(roomId).emit('playersUpdated', freshPlayers);
+            io.to(roomId).emit('auctionStateUpdated', state);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: { players: freshPlayers, state } });
@@ -386,20 +485,23 @@ module.exports = (io, socket) => {
 
     // 6. Clear Live Stage / Revert to Waiting (Admin restricted)
     socket.on('clearLiveStage', async (callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
         }
 
         try {
-            const state = await AuctionState.findOne();
+            const state = await AuctionState.findOne({ room: roomId });
             if (state) {
                 state.livePlayer = null;
                 state.liveStatus = 'waiting';
                 state.soldInfo = null;
                 state.bidHistory = [];
                 await state.save();
-                io.emit('auctionStateUpdated', state);
+                io.to(roomId).emit('auctionStateUpdated', state);
             }
             if (typeof callback === 'function') {
                 callback({ success: true, data: state });
@@ -414,17 +516,20 @@ module.exports = (io, socket) => {
 
     // 7. Add Player to Roster (Admin restricted)
     socket.on('addPlayer', async (playerData, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
         }
 
         try {
-            const newPlayer = new Player(playerData);
+            const newPlayer = new Player({ ...playerData, room: roomId });
             await newPlayer.save();
 
-            const freshPlayers = await Player.find();
-            io.emit('playersUpdated', freshPlayers);
+            const freshPlayers = await Player.find({ room: roomId });
+            io.to(roomId).emit('playersUpdated', freshPlayers);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: freshPlayers });
@@ -439,17 +544,20 @@ module.exports = (io, socket) => {
 
     // 8. Add Franchise Team (Admin restricted)
     socket.on('addTeam', async (teamData, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
         }
 
         try {
-            const newTeam = new Team(teamData);
+            const newTeam = new Team({ ...teamData, room: roomId });
             await newTeam.save();
 
-            const freshTeams = await Team.find();
-            io.emit('teamsUpdated', freshTeams);
+            const freshTeams = await Team.find({ room: roomId });
+            io.to(roomId).emit('teamsUpdated', freshTeams);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: freshTeams });
@@ -464,6 +572,9 @@ module.exports = (io, socket) => {
 
     // 9. Delete Franchise Team (Admin restricted)
     socket.on('deleteTeam', async (data, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
@@ -471,10 +582,10 @@ module.exports = (io, socket) => {
 
         try {
             const { teamId } = data;
-            await Team.findByIdAndDelete(teamId);
+            await Team.findOneAndDelete({ _id: teamId, room: roomId });
 
-            const freshTeams = await Team.find();
-            io.emit('teamsUpdated', freshTeams);
+            const freshTeams = await Team.find({ room: roomId });
+            io.to(roomId).emit('teamsUpdated', freshTeams);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: freshTeams });
@@ -489,6 +600,9 @@ module.exports = (io, socket) => {
 
     // 10. Save Rules (Admin restricted)
     socket.on('updateRules', async (rulesData, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
@@ -496,9 +610,9 @@ module.exports = (io, socket) => {
 
         try {
             const { basePrices, slots, minPlayers, maxPlayers } = rulesData;
-            let rule = await Rule.findOne();
+            let rule = await Rule.findOne({ room: roomId });
             if (!rule) {
-                rule = new Rule({ basePrices, slots, minPlayers, maxPlayers });
+                rule = new Rule({ room: roomId, basePrices, slots, minPlayers, maxPlayers });
             } else {
                 rule.basePrices = basePrices;
                 rule.slots = slots;
@@ -507,7 +621,7 @@ module.exports = (io, socket) => {
             }
             await rule.save();
 
-            io.emit('rulesUpdated', rule);
+            io.to(roomId).emit('rulesUpdated', rule);
 
             if (typeof callback === 'function') {
                 callback({ success: true, data: rule });
@@ -520,8 +634,11 @@ module.exports = (io, socket) => {
         }
     });
 
-    // 11. System Reset (Admin restricted, Elevated Check & Confirmation Safety Guard)
+    // 11. System Reset (Admin restricted, verifies against Room passkey)
     socket.on('systemReset', async (data, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
         if (!socket.isAdmin) {
             if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
             return;
@@ -536,7 +653,14 @@ module.exports = (io, socket) => {
             return;
         }
 
-        if (securityPin !== '1234') {
+        const room = await Room.findById(roomId);
+        if (!room) {
+            if (typeof callback === 'function') return callback({ success: false, error: 'Room not found.' });
+            return;
+        }
+
+        // Verify PIN matches room passkey
+        if (securityPin !== room.passkey) {
             if (typeof callback === 'function') {
                 return callback({ success: false, error: 'Invalid security PIN' });
             }
@@ -545,34 +669,35 @@ module.exports = (io, socket) => {
 
         try {
             if (type === 'hard') {
-                await Player.deleteMany({});
-                await Team.deleteMany({});
-                await Rule.deleteMany({});
-                await AuctionState.deleteMany({});
+                await Player.deleteMany({ room: roomId });
+                await Team.deleteMany({ room: roomId });
+                await Rule.deleteMany({ room: roomId });
+                await AuctionState.deleteMany({ room: roomId });
 
-                const seededPlayers = await Player.insertMany(DEFAULT_PLAYERS);
-                const seededTeams = await Team.insertMany(DEFAULT_TEAMS);
+                const seededPlayers = await Player.insertMany(DEFAULT_PLAYERS.map(p => ({ ...p, room: roomId })));
+                const seededTeams = await Team.insertMany(DEFAULT_TEAMS.map(t => ({ ...t, room: roomId })));
                 
-                const seededRule = new Rule(DEFAULT_RULES);
+                const seededRule = new Rule({ room: roomId, ...DEFAULT_RULES });
                 await seededRule.save();
 
-                const seededState = new AuctionState(DEFAULT_AUCTION_STATE);
+                const seededState = new AuctionState({ room: roomId, ...DEFAULT_AUCTION_STATE });
                 await seededState.save();
 
-                io.emit('playersUpdated', seededPlayers);
-                io.emit('teamsUpdated', seededTeams);
-                io.emit('rulesUpdated', seededRule);
-                io.emit('auctionStateUpdated', seededState);
+                io.to(roomId).emit('playersUpdated', seededPlayers);
+                io.to(roomId).emit('teamsUpdated', seededTeams);
+                io.to(roomId).emit('rulesUpdated', seededRule);
+                io.to(roomId).emit('auctionStateUpdated', seededState);
 
                 if (typeof callback === 'function') {
                     callback({ success: true, data: { players: seededPlayers, teams: seededTeams, rules: seededRule, state: seededState } });
                 }
             } else if (type === 'clear') {
-                await Player.deleteMany({});
-                await Team.deleteMany({});
-                await AuctionState.deleteMany({});
+                await Player.deleteMany({ room: roomId });
+                await Team.deleteMany({ room: roomId });
+                await AuctionState.deleteMany({ room: roomId });
 
                 const cleanState = {
+                    room: roomId,
                     livePlayer: null,
                     liveStatus: 'waiting',
                     soldInfo: null,
@@ -581,9 +706,9 @@ module.exports = (io, socket) => {
                 const seededState = new AuctionState(cleanState);
                 await seededState.save();
 
-                io.emit('playersUpdated', []);
-                io.emit('teamsUpdated', []);
-                io.emit('auctionStateUpdated', seededState);
+                io.to(roomId).emit('playersUpdated', []);
+                io.to(roomId).emit('teamsUpdated', []);
+                io.to(roomId).emit('auctionStateUpdated', seededState);
 
                 if (typeof callback === 'function') {
                     callback({ success: true, data: { players: [], teams: [], state: seededState } });
@@ -598,6 +723,6 @@ module.exports = (io, socket) => {
     });
 
     socket.on('disconnect', () => {
-        console.log(`Client disconnected: ${socket.id}`);
+        console.log(`Client socket disconnected: ${socket.id}`);
     });
 };

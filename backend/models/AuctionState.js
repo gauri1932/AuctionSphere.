@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const auctionStateSchema = mongoose.Schema({
+    room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', required: true },
     livePlayer: { type: Object, default: null },
     liveStatus: { type: String, enum: ['waiting', 'live', 'sold', 'unsold'], default: 'waiting' },
     soldInfo: {

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const ruleSchema = mongoose.Schema({
+    room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', required: true },
     basePrices: {
         A: { type: Number, default: 1000000 },
         B: { type: Number, default: 500000 },

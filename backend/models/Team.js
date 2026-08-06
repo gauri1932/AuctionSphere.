@@ -1,7 +1,8 @@
 const mongoose = require('mongoose');
 
 const teamSchema = mongoose.Schema({
-    name: { type: String, required: true, unique: true },
+    name: { type: String, required: true },
+    room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', required: true },
     budget: { type: Number, required: true }, // Remaining Budget
     initialBudget: { type: Number, required: true } // Starting Budget
 }, {

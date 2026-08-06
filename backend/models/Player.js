@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const playerSchema = mongoose.Schema({
     name: { type: String, required: true },
+    room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', required: true },
     photo: { type: String, default: 'default.png' },
     category: { type: String, required: true }, // A, B, C, etc.
     basePrice: { type: Number }, // Derived from category rules if not specified

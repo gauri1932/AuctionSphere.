@@ -1,21 +1,17 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import LobbyPage from './pages/LobbyPage';
 import Navbar from './components/Navbar';
+import RoomAuthWrapper from './components/RoomAuthWrapper';
 import AuctionPage from './pages/AuctionPage';
 import SummaryPage from './pages/SummaryPage';
 import PlayerListPage from './pages/PlayerListPage';
 import CategoryPage from './pages/CategoryPage';
 import AdminPage from './pages/AdminPage';
 import TeamHubPage from './pages/TeamHubPage';
-import { initializeDatabase } from './utils/localStorageHelper';
 import './index.css';
 
 function App() {
-  // Initialize local rosters database on boot
-  useEffect(() => {
-    initializeDatabase();
-  }, []);
-
   return (
     <Router>
       <div className="min-h-screen flex flex-col bg-primary-dark text-white relative">
@@ -51,12 +47,13 @@ function App() {
         {/* Primary Page Canvas */}
         <main className="flex-grow relative z-10 select-text">
           <Routes>
-            <Route path="/" element={<AuctionPage />} />
-            <Route path="/summary" element={<SummaryPage />} />
-            <Route path="/players" element={<PlayerListPage />} />
-            <Route path="/category" element={<CategoryPage />} />
-            <Route path="/manage" element={<AdminPage />} />
-            <Route path="/teams" element={<TeamHubPage />} />
+            <Route path="/" element={<LobbyPage />} />
+            <Route path="/room/:roomId" element={<RoomAuthWrapper><AuctionPage /></RoomAuthWrapper>} />
+            <Route path="/room/:roomId/summary" element={<RoomAuthWrapper><SummaryPage /></RoomAuthWrapper>} />
+            <Route path="/room/:roomId/players" element={<RoomAuthWrapper><PlayerListPage /></RoomAuthWrapper>} />
+            <Route path="/room/:roomId/category" element={<RoomAuthWrapper><CategoryPage /></RoomAuthWrapper>} />
+            <Route path="/room/:roomId/manage" element={<RoomAuthWrapper><AdminPage /></RoomAuthWrapper>} />
+            <Route path="/room/:roomId/teams" element={<RoomAuthWrapper><TeamHubPage /></RoomAuthWrapper>} />
           </Routes>
         </main>
 

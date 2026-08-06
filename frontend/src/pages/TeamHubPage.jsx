@@ -3,8 +3,7 @@ import {
   getPlayers,
   getTeams,
   formatRupees,
-  getRules,
-  initializeDatabase
+  getRules
 } from '../utils/localStorageHelper';
 import { socket } from '../utils/socket';
 import './TeamHubPage.css';

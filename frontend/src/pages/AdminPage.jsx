@@ -1,27 +1,73 @@
 import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth, useUser, UserButton } from '@clerk/clerk-react';
 import {
-  getPlayers,
-  savePlayers,
-  getTeams,
-  saveTeams,
-  getAuctionState,
-  saveAuctionState,
   formatRupees,
-  parseCSV,
-  initializeDatabase,
-  getRules,
-  saveRules
+  parseCSV
 } from '../utils/localStorageHelper';
 import { socket } from '../utils/socket';
 import './AdminPage.css';
 
 const AdminPage = () => {
-  // Authentication PIN State
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return sessionStorage.getItem('admin_authenticated') === 'true';
-  });
-  const [pinInput, setPinInput] = useState('');
-  const [pinError, setPinError] = useState('');
+  const { roomId } = useParams();
+  const navigate = useNavigate();
+  const { isLoaded, userId, getToken } = useAuth();
+  const { user } = useUser();
+  const [isAdminRoomOwner, setIsAdminRoomOwner] = useState(false);
+  const [checkingOwner, setCheckingOwner] = useState(true);
+
+  useEffect(() => {
+    const verifyOwnership = async () => {
+      if (!isLoaded) {
+        console.log('[Ownership Check] useAuth is not loaded yet');
+        return;
+      }
+      
+      try {
+        console.log('[Ownership Check] Started with userId:', userId, 'and roomId:', roomId);
+        if (!userId) {
+          console.log('[Ownership Check] No userId found, setting admin false');
+          setIsAdminRoomOwner(false);
+          setCheckingOwner(false);
+          return;
+        }
+
+        const token = await getToken();
+        console.log('[Ownership Check] Token fetched successfully:', !!token);
+        
+        const roomRes = await fetch(`/api/rooms/${roomId}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        console.log('[Ownership Check] Fetch room response status:', roomRes.status);
+        if (roomRes.ok) {
+          const roomData = await roomRes.json();
+          console.log('[Ownership Check] Room adminUserId from DB:', roomData.adminUserId, 'vs Current userId:', userId);
+          if (roomData.adminUserId === userId) {
+            console.log('[Ownership Check] Match! Setting admin true');
+            sessionStorage.setItem(`room_admin_${roomId}`, 'true');
+            setIsAdminRoomOwner(true);
+          } else {
+            console.log('[Ownership Check] Mismatch! Setting admin false');
+            sessionStorage.removeItem(`room_admin_${roomId}`);
+            setIsAdminRoomOwner(false);
+          }
+        } else {
+          console.log('[Ownership Check] Room fetch failed with status:', roomRes.status);
+          setIsAdminRoomOwner(false);
+        }
+      } catch (err) {
+        console.error('[Ownership Check] Failed to verify room ownership:', err);
+        setIsAdminRoomOwner(false);
+      } finally {
+        setCheckingOwner(false);
+      }
+    };
+
+    verifyOwnership();
+  }, [isLoaded, userId, roomId]);
 
   // Roster, Teams and Auction state
   const [players, setPlayers] = useState([]);
@@ -82,7 +128,7 @@ const AdminPage = () => {
         setAuctionState(res.data.state);
         setRules(res.data.rules);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
         showNotification('Session unauthorized. Please re-authenticate.', 'error');
       } else {
         showNotification(res.error || 'Failed to fetch initial data.', 'error');
@@ -132,26 +178,6 @@ const AdminPage = () => {
     setTimeout(() => setNotification({ text: '', type: '' }), 4000);
   };
 
-  // PIN Validation Handler
-  const handlePinSubmit = (e) => {
-    e.preventDefault();
-    if (pinInput === '1234') {
-      setIsAuthenticated(true);
-      sessionStorage.setItem('admin_authenticated', 'true');
-      setPinError('');
-      // Update socket auth token and reconnect to establish admin status
-      socket.auth = { token: '1234' };
-      socket.disconnect().connect();
-      // Fetch initial data after reconnecting
-      setTimeout(() => {
-        refreshAllState();
-      }, 150);
-    } else {
-      setPinError('Access Denied. Incorrect Security PIN.');
-      setPinInput('');
-    }
-  };
-
   // Push Player to Live Stage
   const pushPlayerToLive = (player) => {
     socket.timeout(5000).emit('pushPlayerLive', { playerId: player._id || player.id }, (err, res) => {
@@ -166,7 +192,7 @@ const AdminPage = () => {
         setBuyingTeamId('');
         showNotification(`Active Player: ${player.name} pushed to Live Display!`);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error');
       }
@@ -281,7 +307,7 @@ const AdminPage = () => {
         setAuctionState(res.data);
         showNotification(`${team.name} placed a bid of ${formatRupees(potentialBid)}!`);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error');
       }
@@ -298,7 +324,7 @@ const AdminPage = () => {
       if (res.success) {
         setAuctionState(res.data);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       }
     });
   };
@@ -343,7 +369,7 @@ const AdminPage = () => {
           });
         }, 4100);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error');
       }
@@ -375,7 +401,7 @@ const AdminPage = () => {
           });
         }, 2000);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error'); 
       }
@@ -454,10 +480,22 @@ const AdminPage = () => {
           finalRoster = [...players, ...importedPlayers];
         }
 
-        await savePlayers(finalRoster);
-        const freshPlayers = await getPlayers();
+        const token = await getToken();
+        const res = await fetch(`/api/players?roomId=${roomId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(finalRoster)
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.error || 'Failed to save roster to database.');
+        }
+        const freshPlayers = await res.json();
         setPlayers(freshPlayers);
-        showNotification(`Successfully imported ${importedPlayers.length} players!`);
+        showNotification(`Successfully imported ${importedPlayers.length} players to database!`);
       } catch (err) {
         showNotification(`Failed to parse file: ${err.message}`, 'error');
       }
@@ -501,7 +539,7 @@ const AdminPage = () => {
         setNewPlayerAge('');
         showNotification(`${newPlayer.name} registered into the draft successfully!`);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error');
       }
@@ -532,7 +570,7 @@ const AdminPage = () => {
         setNewTeamName('');
         showNotification(`${newTeam.name} franchise registered!`);
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error');
       }
@@ -550,7 +588,7 @@ const AdminPage = () => {
         setTeams(res.data);
         showNotification('Franchise team removed.');
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error');
       }
@@ -565,7 +603,8 @@ const AdminPage = () => {
       : 'This will delete all players and teams. Proceed?';
 
     if (window.confirm(confirmMsg)) {
-      socket.timeout(5000).emit('systemReset', { confirm: true, securityPin: '1234', type }, (err, res) => {
+      const pass = sessionStorage.getItem(`room_passkey_${roomId}`) || '';
+      socket.timeout(5000).emit('systemReset', { confirm: true, securityPin: pass, type }, (err, res) => {
         if (err) {
           showNotification('Operation timed out. Please check connection.', 'error');
           return;
@@ -584,7 +623,7 @@ const AdminPage = () => {
             showNotification('All datasets wiped clean.', 'warning');
           }
         } else if (res.error === 'Unauthorized') {
-          setIsAuthenticated(false);
+          setIsAdminRoomOwner(false);
         } else {
           showNotification(res.error, 'error');
         }
@@ -604,55 +643,45 @@ const AdminPage = () => {
         setRules(res.data);
         showNotification('Roster rules and limits successfully updated!');
       } else if (res.error === 'Unauthorized') {
-        setIsAuthenticated(false);
+        setIsAdminRoomOwner(false);
       } else {
         showNotification(res.error, 'error');
       }
     });
   };
 
-  // Password Locker Screen
-  if (!isAuthenticated) {
+  // Loading check
+  if (checkingOwner || !isLoaded) {
+    return (
+      <div className="min-h-[80vh] flex items-center justify-center">
+        <span className="w-10 h-10 border-4 border-accent-gold border-t-transparent rounded-full animate-spin"></span>
+      </div>
+    );
+  }
+
+  // Admin Access Denied Screen
+  if (!isAdminRoomOwner) {
     return (
       <div className="min-h-[80vh] flex flex-col items-center justify-center px-4 relative">
         <div className="stadium-light-overlay absolute inset-0 z-0"></div>
 
-        <div className="w-full max-w-md glass-panel glass-panel-glow p-8 rounded-2xl border border-accent-gold/20 text-center relative z-10">
-          <div className="w-20 h-20 bg-accent-gold/10 rounded-full border border-accent-gold/30 flex items-center justify-center mx-auto mb-6 text-3xl">
-            🔒
+        <div className="w-full max-w-md glass-panel glass-panel-glow p-8 rounded-2xl border border-red-500/20 text-center relative z-10">
+          <div className="w-20 h-20 bg-red-500/10 rounded-full border border-red-500/30 flex items-center justify-center mx-auto mb-6 text-3xl">
+            🚫
           </div>
 
-          <h1 className="text-4xl font-sporty tracking-wider text-accent-gold mb-2">LOCKER ROOM ENTRANCE</h1>
-          <p className="text-sm text-gray-400 mb-8 uppercase tracking-widest font-semibold">Super Player Auction Admin</p>
+          <h1 className="text-3xl font-sporty tracking-wider text-red-500 mb-2">ACCESS DENIED</h1>
+          <p className="text-sm text-gray-400 mb-4 uppercase tracking-widest font-semibold">Admin Credentials Required</p>
+          <p className="text-xs text-gray-400 leading-relaxed mb-6">
+            You have unlocked the read-only views for this auction, but administrative permissions are required to access the Locker Room Control Panel.
+          </p>
 
-          <form onSubmit={handlePinSubmit} className="space-y-6">
-            <div>
-              <label className="block text-xs uppercase tracking-[0.2em] font-bold text-gray-300 mb-3 text-left">
-                Enter System Access PIN (Default: 1234)
-              </label>
-              <input
-                type="password"
-                maxLength="6"
-                value={pinInput}
-                onChange={(e) => setPinInput(e.target.value)}
-                placeholder="••••"
-                className="w-full px-5 py-4 bg-primary-dark/80 text-center text-2xl font-bold tracking-[0.6em] rounded-xl border border-white/10 text-white focus:outline-none focus:border-accent-gold transition-all duration-300 placeholder:text-gray-600"
-              />
-            </div>
-
-            {pinError && (
-              <p className="text-red-500 font-bold text-xs uppercase tracking-wide bg-red-950/40 py-2 px-3 rounded-lg border border-red-500/20">
-                ⚠️ {pinError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              className="w-full py-4 bg-accent-gold hover:bg-gold-hover text-primary-dark font-bold rounded-xl tracking-widest font-sporty text-xl uppercase transition-all duration-300 hover:scale-[1.02] shadow-lg glow-gold cursor-pointer"
-            >
-              Verify Credentials
-            </button>
-          </form>
+          <button
+            onClick={() => navigate(`/room/${roomId}`)}
+            className="w-full py-4 bg-secondary-dark hover:bg-white/5 border border-white/10 text-white font-bold rounded-xl tracking-widest font-sporty text-lg uppercase transition-all duration-300 cursor-pointer"
+          >
+            Back to Live Board
+          </button>
         </div>
       </div>
     );
@@ -677,13 +706,18 @@ const AdminPage = () => {
 
       {/* Header Info */}
       <div className="relative z-10 flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
-        <div>
-          <h1 className="text-5xl font-sporty tracking-wider text-accent-gold text-center md:text-left">
-            CONTROL DECK
-          </h1>
-          <p className="text-xs tracking-[0.2em] font-semibold text-gray-400 uppercase mt-1 text-center md:text-left">
-            Real-Time State Synchronization console • Active PIN Status
-          </p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-5xl font-sporty tracking-wider text-accent-gold text-center md:text-left">
+              CONTROL DECK
+            </h1>
+            <p className="text-xs tracking-[0.2em] font-semibold text-gray-400 uppercase mt-1 text-center md:text-left">
+              Real-Time Room Draft Console
+            </p>
+          </div>
+          <div className="bg-white/5 border border-white/10 p-2 rounded-full flex items-center justify-center">
+            <UserButton afterSignOutUrl="/" />
+          </div>
         </div>
 
         {/* Sync Tip Notice */}

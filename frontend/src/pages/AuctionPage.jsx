@@ -1,9 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import {
-  getAuctionState,
-  formatRupees,
-  initializeDatabase
+  formatRupees
 } from '../utils/localStorageHelper';
 import { socket } from '../utils/socket';
 import './AuctionPage.css';
