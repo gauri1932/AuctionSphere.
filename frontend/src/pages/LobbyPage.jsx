@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser, useAuth } from '@clerk/clerk-react';
 import './LobbyPage.css';
+import { API_URL } from '../utils/apiConfig';
 
 const LobbyPage = () => {
   const [rooms, setRooms] = useState([]);
@@ -33,7 +34,7 @@ const LobbyPage = () => {
   const fetchRooms = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/rooms');
+      const res = await fetch(`${API_URL}/rooms`);
       if (!res.ok) throw new Error('Failed to load rooms');
       const data = await res.json();
       setRooms(data);
@@ -59,7 +60,7 @@ const LobbyPage = () => {
       setCreateError('');
       const token = await getToken();
 
-      const res = await fetch('/api/rooms', {
+      const res = await fetch(`${API_URL}/rooms`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -78,6 +79,7 @@ const LobbyPage = () => {
       // Auto authorize room admin locally
       sessionStorage.setItem(`room_auth_${newRoom._id}`, 'true');
       sessionStorage.setItem(`room_admin_${newRoom._id}`, 'true');
+      sessionStorage.setItem(`room_name_${newRoom._id}`, newRoom.name);
 
       // Navigate straight to the admin manager page
       navigate(`/room/${newRoom._id}/manage`);
@@ -92,6 +94,7 @@ const LobbyPage = () => {
   const handleRoomClick = async (room) => {
     const isAuth = sessionStorage.getItem(`room_auth_${room._id}`) === 'true';
     if (isAuth) {
+      sessionStorage.setItem(`room_name_${room._id}`, room.name);
       navigate(`/room/${room._id}`);
       return;
     }
@@ -118,7 +121,7 @@ const LobbyPage = () => {
         headers['Authorization'] = `Bearer ${token}`;
       }
 
-      const res = await fetch(`/api/rooms/${selectedRoom._id}/verify-passkey`, {
+      const res = await fetch(`${API_URL}/rooms/${selectedRoom._id}/verify-passkey`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ passkey: enteredPasskey })
@@ -132,6 +135,7 @@ const LobbyPage = () => {
 
       if (data.success) {
         sessionStorage.setItem(`room_auth_${selectedRoom._id}`, 'true');
+        sessionStorage.setItem(`room_name_${selectedRoom._id}`, selectedRoom.name);
         if (data.isAdmin) {
           sessionStorage.setItem(`room_admin_${selectedRoom._id}`, 'true');
         }

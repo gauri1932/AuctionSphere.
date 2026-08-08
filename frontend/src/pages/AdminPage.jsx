@@ -6,6 +6,7 @@ import {
   parseCSV
 } from '../utils/localStorageHelper';
 import { socket } from '../utils/socket';
+import { API_URL } from '../utils/apiConfig';
 import './AdminPage.css';
 
 const AdminPage = () => {
@@ -35,7 +36,7 @@ const AdminPage = () => {
         const token = await getToken();
         console.log('[Ownership Check] Token fetched successfully:', !!token);
         
-        const roomRes = await fetch(`/api/rooms/${roomId}`, {
+        const roomRes = await fetch(`${API_URL}/rooms/${roomId}`, {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -481,7 +482,7 @@ const AdminPage = () => {
         }
 
         const token = await getToken();
-        const res = await fetch(`/api/players?roomId=${roomId}`, {
+        const res = await fetch(`${API_URL}/players?roomId=${roomId}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -688,7 +689,7 @@ const AdminPage = () => {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 pb-24 relative">
+    <div className="max-w-6xl mx-auto px-4 py-8 pb-24 relative animate-page-in">
       <div className="stadium-light-overlay absolute inset-0 z-0"></div>
 
       {/* Floating System Notification */}

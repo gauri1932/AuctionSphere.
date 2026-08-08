@@ -1,34 +1,30 @@
 /* AuctionPage.css */
 
-/* Premium radial gradient mimicking stadium light towers */
+/* Premium radial gradient mimicking stadium light towers - extremely subtle */
 .stadium-light-overlay {
-  background: radial-gradient(circle at 50% -20%, rgba(245, 166, 35, 0.15) 0%, rgba(27, 94, 32, 0.1) 40%, rgba(13, 27, 42, 0) 80%);
+  background: none;
   pointer-events: none;
 }
 
-/* Grass textures / turf background */
-.turf-gradient {
-  background: linear-gradient(135deg, #1b5e20 0%, #0d3611 100%);
-}
-
+/* Faint dot texture */
 .turf-overlay {
-  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 0);
-  background-size: 24px 24px;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 0);
+  background-size: 20px 20px;
 }
 
-/* Pulse animation for Live Auction Badge */
+/* Pulse animation for Live Auction Badge - subtle */
 .live-pulse-badge {
-  animation: livePulse 2s infinite;
+  animation: livePulse 2.5s infinite;
 }
 
 @keyframes livePulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4);
   }
   70% {
-    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+    box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
   }
 }

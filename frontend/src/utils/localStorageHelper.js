@@ -1,3 +1,5 @@
+import { API_URL } from './apiConfig';
+
 // LocalStorage keys
 export const STATE_KEY = 'super_auction_state';
 export const PLAYERS_KEY = 'super_auction_players';
@@ -107,8 +109,7 @@ export const DEFAULT_AUCTION_STATE = {
   bidHistory: []
 };
 
-const hostname = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
-const API_URL = `http://${hostname}:5000/api`;
+
 
 // Helper to extract roomId from active path in URL
 const getRoomIdFromUrl = () => {

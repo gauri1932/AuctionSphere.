@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import { socket } from '../utils/socket';
+import { API_URL } from '../utils/apiConfig';
 
 const RoomAuthWrapper = ({ children }) => {
   const { roomId } = useParams();
@@ -28,11 +29,12 @@ const RoomAuthWrapper = ({ children }) => {
       const headers = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const roomRes = await fetch(`/api/rooms/${roomId}`, { headers });
+      const roomRes = await fetch(`${API_URL}/rooms/${roomId}`, { headers });
       if (roomRes.ok) {
         const roomData = await roomRes.json();
         console.log('[Wrapper Auth] Room metadata fetched:', roomData.name);
         setRoomName(roomData.name);
+        sessionStorage.setItem(`room_name_${roomId}`, roomData.name);
       } else {
         console.log('[Wrapper Auth] Room not found in metadata fetch');
         setError('Room not found.');
@@ -43,7 +45,7 @@ const RoomAuthWrapper = ({ children }) => {
       if (userId) {
         console.log('[Wrapper Auth] Logged-in user found:', userId, 'verifying with backend...');
         const token = await getToken();
-        const res = await fetch(`/api/rooms/${roomId}/verify-passkey`, {
+        const res = await fetch(`${API_URL}/rooms/${roomId}/verify-passkey`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -118,7 +120,7 @@ const RoomAuthWrapper = ({ children }) => {
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const res = await fetch(`/api/rooms/${roomId}/verify-passkey`, {
+      const res = await fetch(`${API_URL}/rooms/${roomId}/verify-passkey`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ passkey: passkeyInput })
@@ -133,6 +135,7 @@ const RoomAuthWrapper = ({ children }) => {
       if (data.success) {
         sessionStorage.setItem(`room_auth_${roomId}`, 'true');
         sessionStorage.setItem(`room_passkey_${roomId}`, passkeyInput);
+        sessionStorage.setItem(`room_name_${roomId}`, roomName);
         if (data.isAdmin) {
           sessionStorage.setItem(`room_admin_${roomId}`, 'true');
         }

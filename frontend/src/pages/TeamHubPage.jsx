@@ -91,7 +91,7 @@ const TeamHubPage = () => {
   // 1. SELECTOR GRID PORTAL (No team selected)
   if (!activeTeam) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8 pb-24 relative select-none animate-slide-up">
+      <div className="max-w-6xl mx-auto px-4 py-8 pb-24 relative select-none animate-page-in">
         <div className="text-center mb-10">
           <h1 className="text-5xl font-sporty tracking-wider text-accent-gold">
             FRANCHISE SQUAD HQ
@@ -136,7 +136,7 @@ const TeamHubPage = () => {
   const boughtC = activeTeamPlayers.filter(p => p.category === 'C').length;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8 pb-24 relative animate-slide-up select-text">
+    <div className="max-w-7xl mx-auto px-4 py-8 pb-24 relative animate-page-in select-text">
       
       {/* Top Banner Control Deck */}
       <div className="glass-panel active-squad-glow rounded-3xl border p-6 flex flex-col md:flex-row justify-between items-center gap-6 mb-8">

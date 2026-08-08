@@ -37,7 +37,7 @@ const PlayerListPage = () => {
   });
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 pb-24 relative">
+    <div className="max-w-6xl mx-auto px-4 py-8 pb-24 relative animate-page-in">
       <div className="stadium-light-overlay absolute inset-0 z-0"></div>
 
       <div className="relative z-10 mb-8">
