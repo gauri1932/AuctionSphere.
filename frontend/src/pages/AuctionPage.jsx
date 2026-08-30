@@ -144,7 +144,7 @@ const AuctionPage = () => {
       <div className="stadium-light-overlay absolute inset-0 z-0"></div>
 
       {/* Main State Canvas */}
-      <div className="w-full max-w-4xl relative z-10">
+      <div className={`w-full ${auctionState.liveStatus === 'live' && auctionState.livePlayer ? 'max-w-7xl' : 'max-w-4xl'} relative z-10`}>
         
         {/* STATE A: WAITING SCREEN */}
         {auctionState.liveStatus === 'waiting' && (
@@ -184,110 +184,177 @@ const AuctionPage = () => {
 
         {/* STATE B: LIVE PLAYER CARD */}
         {auctionState.liveStatus === 'live' && auctionState.livePlayer && (
-          <div className="glass-panel glass-panel-glow rounded-3xl border border-accent-gold/20 shadow-2xl p-6 sm:p-10 relative overflow-hidden flex flex-col lg:flex-row gap-10 items-center">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             
-            {/* Animated Turf Grid overlay */}
-            <div className="absolute inset-0 turf-overlay opacity-5 z-0"></div>
-
-            {/* Pulsing live badge */}
-            <div className="absolute top-6 left-6 px-4 py-1.5 bg-red-600 border border-red-500 text-white font-sporty tracking-[0.1em] text-sm uppercase rounded-lg shadow-lg live-pulse-badge flex items-center space-x-2 z-10 select-none">
-              <span className="w-2 h-2 bg-white rounded-full animate-ping"></span>
-              <span>LIVE AUCTION</span>
-            </div>
-
-            {/* Draft timer badge */}
-            <div className="absolute top-6 right-6 px-4 py-1.5 bg-primary-dark border border-white/10 text-accent-gold font-sporty tracking-wide text-lg rounded-lg shadow-md z-10 select-none">
-              ⏱️ {formatTime(timerSeconds)}
-            </div>
-
-            {/* Left side: Photo & category badge */}
-            <div className="w-full lg:w-2/5 flex flex-col items-center relative z-10 mt-8 lg:mt-0 select-none border-b lg:border-b-0 lg:border-r border-white/15 pb-8 lg:pb-0 lg:pr-8">
-              <div className="relative">
-                <div className="absolute -inset-1.5 bg-gradient-to-tr from-accent-gold to-cricket-green rounded-full blur opacity-75 animate-pulse"></div>
-                <img
-                  src={auctionState.livePlayer.photo}
-                  alt={auctionState.livePlayer.name}
-                  className="relative w-48 h-48 sm:w-56 sm:h-56 rounded-full border-4 border-primary-dark bg-primary-dark shadow-2xl object-cover"
-                />
-              </div>
-
-              {/* Category badge */}
-              <div className="mt-6 px-6 py-2 bg-accent-gold text-primary-dark font-sporty tracking-widest text-lg font-black uppercase rounded-full shadow-lg glow-gold">
-                {auctionState.livePlayer.category === 'A' ? '⭐ Category A' : auctionState.livePlayer.category === 'B' ? '⚡ Category B' : '🌟 Category C'}
-              </div>
-
-              <h1 className="mt-4 text-4xl font-sporty tracking-wide text-white leading-tight text-center">
-                {auctionState.livePlayer.name}
-              </h1>
+            {/* Main Central box (shifted left) */}
+            <div className="col-span-12 lg:col-span-8 glass-panel glass-panel-glow rounded-3xl border border-accent-gold/20 shadow-2xl p-6 sm:p-10 relative overflow-hidden flex flex-col sm:flex-row gap-10 items-center">
               
-              <div className="flex items-center space-x-2 text-[10px] text-gray-500 font-bold uppercase tracking-widest mt-1 select-none">
-                {auctionState.livePlayer.age && <span>Age: {auctionState.livePlayer.age} • </span>}
-                <span>Base Value: {formatRupees(auctionState.livePlayer.basePrice)}</span>
-              </div>
-            </div>
+              {/* Animated Turf Grid overlay */}
+              <div className="absolute inset-0 turf-overlay opacity-5 z-0"></div>
 
-            {/* Right side: Real-Time Bidding Deck (Current Bid & Bidder Spotlight) */}
-            <div className="w-full lg:w-3/5 space-y-6 relative z-10 flex flex-col justify-center">
-              
-              {/* Flashing Bid Raised Popover Alert */}
-              <div className="h-6 flex justify-center lg:justify-start select-none">
-                {showBidAlert && (
-                  <div className="bg-green-500 text-primary-dark font-black font-sporty px-4 py-0.5 rounded text-xs uppercase tracking-widest animate-bounce shadow-lg flex items-center space-x-1.5">
-                    <span>⚡</span>
-                    <span>BID RAISED!</span>
-                  </div>
-                )}
+              {/* Pulsing live badge */}
+              <div className="absolute top-6 left-6 px-4 py-1.5 bg-red-600 border border-red-500 text-white font-sporty tracking-[0.1em] text-sm uppercase rounded-lg shadow-lg live-pulse-badge flex items-center space-x-2 z-10 select-none">
+                <span className="w-2 h-2 bg-white rounded-full animate-ping"></span>
+                <span>LIVE AUCTION</span>
               </div>
 
-              {/* Current Bid Neon Card */}
-              <div className="bg-primary-dark/90 rounded-2xl border-2 border-accent-gold/30 p-6 shadow-2xl text-center relative overflow-hidden group hover:border-accent-gold transition-all duration-300">
-                <div className="absolute inset-0 turf-overlay opacity-10"></div>
-                <h3 className="text-xs uppercase tracking-[0.2em] font-black text-gray-400 mb-2 select-none">
-                  Current Highest Bid
-                </h3>
-                <div className="text-5xl sm:text-6xl font-sporty text-accent-gold text-glow-gold tracking-wider animate-pulse">
-                  {formatRupees(auctionState.currentBid || auctionState.livePlayer.basePrice)}
+              {/* Draft timer badge */}
+              <div className="absolute top-6 right-6 px-4 py-1.5 bg-primary-dark border border-white/10 text-accent-gold font-sporty tracking-wide text-lg rounded-lg shadow-md z-10 select-none">
+                ⏱️ {formatTime(timerSeconds)}
+              </div>
+
+              {/* Left side: Photo & category badge */}
+              <div className="w-full sm:w-2/5 flex flex-col items-center relative z-10 mt-8 sm:mt-0 select-none border-b sm:border-b-0 sm:border-r border-white/15 pb-8 sm:pb-0 sm:pr-8">
+                <div className="relative">
+                  <div className="absolute -inset-1.5 bg-gradient-to-tr from-accent-gold to-cricket-green rounded-full blur opacity-75 animate-pulse"></div>
+                  <img
+                    src={auctionState.livePlayer.photo}
+                    alt={auctionState.livePlayer.name}
+                    className="relative w-48 h-48 sm:w-56 sm:h-56 rounded-full border-4 border-primary-dark bg-primary-dark shadow-2xl object-cover"
+                  />
                 </div>
-              </div>
 
-              {/* Leading Franchise Spotlight Card */}
-              <div className="bg-primary-dark/65 rounded-2xl border border-white/10 p-5 flex items-center justify-between shadow-lg relative overflow-hidden">
-                <div className="absolute inset-0 bg-gradient-to-r from-accent-gold/5 to-transparent"></div>
+                {/* Category badge */}
+                <div className="mt-6 px-6 py-2 bg-accent-gold text-primary-dark font-sporty tracking-widest text-lg font-black uppercase rounded-full shadow-lg glow-gold">
+                  {auctionState.livePlayer.category === 'A' ? '⭐ Category A' : auctionState.livePlayer.category === 'B' ? '⚡ Category B' : '🌟 Category C'}
+                </div>
+
+                <h1 className="mt-4 text-4xl font-sporty tracking-wide text-white leading-tight text-center">
+                  {auctionState.livePlayer.name}
+                </h1>
                 
-                <div className="flex items-center space-x-4 min-w-0 z-10">
-                  <div className="w-16 h-16 rounded-2xl bg-secondary-dark border border-white/10 flex items-center justify-center text-3xl select-none">
-                    {(() => {
-                      const name = auctionState.highestBidder;
-                      if (!name) return "🛡️";
-                      if (name.toLowerCase().includes("chennai")) return "🦁";
-                      if (name.toLowerCase().includes("mumbai")) return "⚡";
-                      if (name.toLowerCase().includes("pune")) return "🐾";
-                      if (name.toLowerCase().includes("bangalore")) return "🐂";
-                      if (name.toLowerCase().includes("delhi")) return "🌪️";
-                      if (name.toLowerCase().includes("kolkata")) return "👑";
-                      return "🛡️";
-                    })()}
-                  </div>
-                  <div className="min-w-0">
-                    <span className="block text-[10px] text-gray-400 uppercase tracking-widest font-black select-none">
-                      Active Leading Bidder
-                    </span>
-                    <span className="block text-2xl font-bold text-white uppercase truncate">
-                      {auctionState.highestBidder || "Awaiting Bids"}
-                    </span>
+                <div className="flex items-center space-x-2 text-[10px] text-gray-500 font-bold uppercase tracking-widest mt-1 select-none">
+                  {auctionState.livePlayer.age && <span>Age: {auctionState.livePlayer.age} • </span>}
+                  <span>Base Value: {formatRupees(auctionState.livePlayer.basePrice)}</span>
+                </div>
+              </div>
+
+              {/* Right side: Real-Time Bidding Deck (Current Bid & Bidder Spotlight) */}
+              <div className="w-full sm:w-3/5 space-y-6 relative z-10 flex flex-col justify-center">
+                
+                {/* Flashing Bid Raised Popover Alert */}
+                <div className="h-6 flex justify-center lg:justify-start select-none">
+                  {showBidAlert && (
+                    <div className="bg-green-500 text-primary-dark font-black font-sporty px-4 py-0.5 rounded text-xs uppercase tracking-widest animate-bounce shadow-lg flex items-center space-x-1.5">
+                      <span>⚡</span>
+                      <span>BID RAISED!</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Current Bid Neon Card */}
+                <div className="bg-primary-dark/90 rounded-2xl border-2 border-accent-gold/30 p-6 shadow-2xl text-center relative overflow-hidden group hover:border-accent-gold transition-all duration-300">
+                  <div className="absolute inset-0 turf-overlay opacity-10"></div>
+                  <h3 className="text-xs uppercase tracking-[0.2em] font-black text-gray-400 mb-2 select-none">
+                    Current Highest Bid
+                  </h3>
+                  <div className="text-5xl sm:text-6xl font-sporty text-accent-gold text-glow-gold tracking-wider animate-pulse">
+                    {formatRupees(auctionState.currentBid || auctionState.livePlayer.basePrice)}
                   </div>
                 </div>
 
-                {auctionState.highestBidder && (
-                  <div className="hidden sm:block px-3 py-1 bg-green-500/10 border border-green-500/20 text-green-400 font-sporty text-xs font-black uppercase rounded-lg tracking-wider animate-pulse z-10 select-none">
-                    Holding Lead
+                {/* Leading Franchise Spotlight Card */}
+                <div className="bg-primary-dark/65 rounded-2xl border border-white/10 p-5 flex items-center justify-between shadow-lg relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-r from-accent-gold/5 to-transparent"></div>
+                  
+                  <div className="flex items-center space-x-4 min-w-0 z-10">
+                    <div className="w-16 h-16 rounded-2xl bg-secondary-dark border border-white/10 flex items-center justify-center text-3xl select-none">
+                      {(() => {
+                        const name = auctionState.highestBidder;
+                        if (!name) return "🛡️";
+                        if (name.toLowerCase().includes("chennai")) return "🦁";
+                        if (name.toLowerCase().includes("mumbai")) return "⚡";
+                        if (name.toLowerCase().includes("pune")) return "🐾";
+                        if (name.toLowerCase().includes("bangalore")) return "🐂";
+                        if (name.toLowerCase().includes("delhi")) return "🌪️";
+                        if (name.toLowerCase().includes("kolkata")) return "👑";
+                        return "🛡️";
+                      })()}
+                    </div>
+                    <div className="min-w-0">
+                      <span className="block text-[10px] text-gray-400 uppercase tracking-widest font-black select-none">
+                        Active Leading Bidder
+                      </span>
+                      <span className="block text-2xl font-bold text-white uppercase truncate">
+                        {auctionState.highestBidder || "Awaiting Bids"}
+                      </span>
+                    </div>
                   </div>
-                )}
+
+                  {auctionState.highestBidder && (
+                    <div className="hidden sm:block px-3 py-1 bg-green-500/10 border border-green-500/20 text-green-400 font-sporty text-xs font-black uppercase rounded-lg tracking-wider animate-pulse z-10 select-none">
+                      Holding Lead
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-center lg:justify-start space-x-3 text-[10px] text-gray-500 uppercase tracking-[0.15em] py-2 px-3 border border-white/5 bg-white/[0.02] rounded-xl select-none">
+                  <span>⚡</span>
+                  <span>Real-time storage socket synchronizer running</span>
+                </div>
               </div>
 
-              <div className="flex items-center justify-center lg:justify-start space-x-3 text-[10px] text-gray-500 uppercase tracking-[0.15em] py-2 px-3 border border-white/5 bg-white/[0.02] rounded-xl select-none">
-                <span>⚡</span>
-                <span>Real-time storage socket synchronizer running</span>
+            </div>
+
+            {/* Timeline box (right side) */}
+            <div className="col-span-12 lg:col-span-4 glass-panel glass-panel-glow rounded-3xl border border-white/10 p-6 shadow-2xl relative overflow-hidden flex flex-col h-full min-h-[400px] lg:min-h-[500px]">
+              <div className="absolute inset-0 turf-overlay opacity-5 z-0"></div>
+              
+              <h2 className="relative z-10 font-sporty text-2xl tracking-wider text-accent-gold text-glow-gold uppercase border-b border-white/10 pb-3 mb-4 select-none">
+                📊 BID TIMELINE
+              </h2>
+              
+              <div className="relative z-10 flex-grow overflow-y-auto pr-1 space-y-4 max-h-[380px] lg:max-h-[440px]">
+                {auctionState.bidHistory && auctionState.bidHistory.length > 0 ? (
+                  <div className="relative border-l-2 border-accent-gold/20 ml-3 pl-6 space-y-6">
+                    {auctionState.bidHistory.slice().reverse().map((bid, index) => {
+                      const isNewest = index === 0;
+                      const bidTime = bid.time || bid.timestamp;
+                      
+                      return (
+                        <div key={bidTime || index} className="relative group animate-page-in">
+                          {/* Timeline node dot */}
+                          <div className={`absolute -left-[31px] top-1.5 w-4 h-4 rounded-full border-2 bg-[#0d1b2a] transition-all duration-300 ${
+                            isNewest 
+                              ? 'border-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)] scale-110' 
+                              : 'border-accent-gold/40'
+                          }`}>
+                            {isNewest && (
+                              <span className="absolute inset-0 rounded-full bg-green-500 animate-ping opacity-75"></span>
+                            )}
+                          </div>
+                          
+                          {/* Bid item content */}
+                          <div className={`p-3.5 rounded-xl border transition-all duration-200 ${
+                            isNewest 
+                              ? 'bg-green-500/10 border-green-500/30' 
+                              : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.04]'
+                          }`}>
+                            <div className="flex justify-between items-start mb-1 gap-2">
+                              <span className={`font-bold text-sm uppercase truncate ${
+                                isNewest ? 'text-green-400' : 'text-white'
+                              }`}>
+                                {bid.bidder || bid.teamName}
+                              </span>
+                              <span className="text-[10px] text-gray-500 font-mono font-medium shrink-0 pt-0.5">
+                                {bidTime ? new Date(bidTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : "Live"}
+                              </span>
+                            </div>
+                            <div className="font-sporty text-xl text-accent-gold text-glow-gold tracking-wider">
+                              {formatRupees(bid.bidAmount || bid.amount)}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-center py-16 text-gray-500 select-none">
+                    <span className="text-4xl mb-3">⏳</span>
+                    <p className="text-xs uppercase tracking-widest font-black">Awaiting First Bid</p>
+                    <p className="text-[10px] text-gray-600 mt-1 max-w-[200px] leading-relaxed">Bids placed by franchises will appear here in real-time</p>
+                  </div>
+                )}
               </div>
             </div>
 
