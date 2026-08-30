@@ -1,90 +1,49 @@
 @import "tailwindcss";
 
 @theme {
-  --color-primary-dark: #0E1621;
-  --color-secondary-dark: #1A2430;
-  --color-card-bg: #1A2430;
-  --color-hover-bg: #263241;
-  --color-accent-gold: #C8A03C;
-  --color-gold-hover: #E5B84A;
-  --color-cricket-green: #16A34A;
-  --color-warning-orange: #F59E0B;
-  --color-danger-red: #DC2626;
-  --color-text-primary: #F8FAFC;
-  --color-text-secondary: #94A3B8;
+  --color-primary-dark: #0d1b2a;
+  --color-secondary-dark: #1b263b;
+  --color-accent-gold: #F5A623;
+  --color-gold-hover: #D98E16;
+  --color-cricket-green: #1b5e20;
+  --color-cricket-dark: #0d3611;
+  --color-glass-bg: rgba(13, 27, 42, 0.75);
   
   --font-sporty: 'Bebas Neue', sans-serif;
   --font-sans: 'DM Sans', sans-serif;
 }
 
 body {
-  background-color: #0E1621;
-  color: #F8FAFC;
+  background-color: #0d1b2a;
+  color: #f8f9fa;
   font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
-  min-height: 100vh;
 }
 
-/* Custom scrollbar matching professional layout */
+/* Custom Scrollbar for premium tables and rosters */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0E1621;
+  background: #0d1b2a;
 }
 ::-webkit-scrollbar-thumb {
-  background: #263241;
+  background: #1b263b;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #C8A03C;
+  background: #F5A623;
 }
 
-/* Main Panel and Card Styles */
-.main-panel {
-  background-color: #1A2430;
+/* Glassmorphism Styles */
+.glass-panel {
+  background: rgba(27, 38, 59, 0.7);
+  backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-.custom-card {
-  background-color: #1A2430;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  transition: all 150ms ease-out;
-}
-
-.custom-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(255, 255, 255, 0.15);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
-
-/* Buttons transition & click */
-button, .btn {
-  border-radius: 10px;
-  transition: all 150ms ease-out;
-}
-button:hover, .btn:hover {
-  transform: translateY(-2px);
-  border-color: rgba(255, 255, 255, 0.25);
-}
-button:active, .btn:active {
-  transform: scale(0.97);
-}
-
-/* Input standard radius */
-input, select, textarea {
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background-color: #1A2430;
-  color: #F8FAFC;
-  padding: 10px 14px;
-}
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: #C8A03C;
+.glass-panel-glow {
+  box-shadow: 0 0 25px rgba(245, 166, 35, 0.08);
 }
 
 /* Bebas font utilities */
@@ -93,51 +52,11 @@ input:focus, select:focus, textarea:focus {
   letter-spacing: 0.05em;
 }
 
-/* Subtle soft gold text shadow for gold values */
+/* Glow effects */
+.glow-gold {
+  box-shadow: 0 0 15px rgba(245, 166, 35, 0.35);
+}
+
 .text-glow-gold {
-  text-shadow: 0 0 8px rgba(201, 162, 39, 0.25);
+  text-shadow: 0 0 10px rgba(245, 166, 35, 0.6);
 }
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes timerPulse {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.03); }
-  100% { transform: scale(1); }
-}
-
-.timer-pulse-active {
-  animation: timerPulse 1s ease-in-out infinite;
-}
-
-@keyframes bidSlideUp {
-  0% {
-    transform: translateY(16px);
-    opacity: 0;
-  }
-  100% {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-
-

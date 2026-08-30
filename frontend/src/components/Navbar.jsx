@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import './Navbar.css';
 
 const Navbar = () => {
@@ -50,50 +50,41 @@ const Navbar = () => {
   }
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-[#1A2430]/90 backdrop-blur-md border-t border-white/5 shadow-lg">
-      <div className="max-w-[90%] mx-auto px-6">
+    <nav className="fixed bottom-0 left-0 right-0 z-50 glass-panel border-t border-white/10 shadow-[0_-5px_30px_rgba(0,0,0,0.5)]">
+      <div className="max-w-6xl mx-auto px-4">
         <div className="flex justify-between items-center h-16">
           {/* Main Links */}
-          <div className="flex space-x-4 sm:space-x-8 overflow-x-auto no-scrollbar scroll-smooth flex-grow py-1">
+          <div className="flex space-x-1 sm:space-x-4 overflow-x-auto no-scrollbar scroll-smooth flex-grow py-1">
             {navItems.map((item) => {
               const isActive = location.pathname === item.path;
               return (
                 <Link
                   key={item.path}
                   to={item.path}
-                  className={`relative flex items-center space-x-2.5 px-4 py-2 text-xs font-bold uppercase select-none whitespace-nowrap group rounded-md transition-all duration-200 ease-out hover:bg-white/[0.02] ${
+                  className={`flex items-center space-x-2 px-3 sm:px-4 py-2 rounded-lg text-sm font-medium tracking-wide uppercase transition-all duration-300 select-none whitespace-nowrap ${
                     isActive
-                      ? 'text-[#F8FAFC] -translate-y-[2px]'
-                      : 'text-[#94A3B8] hover:text-[#F8FAFC] hover:-translate-y-[2px]'
+                      ? 'bg-accent-gold text-primary-dark font-bold scale-105 shadow-lg glow-gold'
+                      : 'text-gray-300 hover:text-accent-gold hover:bg-white/5'
                   }`}
                 >
-                  <span className={`text-[16px] transition-opacity duration-200 ease-out ${
-                    isActive ? 'opacity-100' : 'opacity-70 group-hover:opacity-100'
-                  }`}>
-                    {item.icon}
-                  </span>
-                  <span className="hidden md:inline font-sans tracking-[0.05em]">{item.label}</span>
-                  <span className="md:hidden font-sans text-xs tracking-wider">
+                  <span className="text-base">{item.icon}</span>
+                  <span className="hidden md:inline font-sporty tracking-[0.05em]">{item.label}</span>
+                  <span className="md:hidden font-sporty text-xs tracking-wider">
                     {item.label.split(' ')[0]}
                   </span>
-                  
-                  {/* Underline Indicator for Active State */}
-                  <span className={`absolute bottom-0 left-4 right-4 h-[2px] bg-[#C8A03C] transition-all duration-200 ease-out rounded ${
-                    isActive ? 'scale-x-100 opacity-100' : 'scale-x-0 opacity-0 group-hover:scale-x-50 group-hover:opacity-50'
-                  }`} />
                 </Link>
               );
             })}
           </div>
 
           {/* Full Screen Toggler */}
-          <div className="pl-6 border-l border-white/5 flex items-center h-8 select-none">
+          <div className="pl-4 border-l border-white/10 flex items-center h-8 select-none">
             <button
               onClick={toggleFullscreen}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-[10px] text-xs font-bold tracking-wider uppercase font-sans border transition-all duration-150 active:scale-[0.97] hover:-translate-y-[2px] cursor-pointer ${
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium tracking-wide uppercase font-sporty transition-all duration-300 ${
                 isFullscreen
-                  ? 'bg-red-600/10 border-red-500/35 text-red-500 hover:bg-red-600/20'
-                  : 'bg-transparent border-white/10 text-[#C8A03C] hover:border-[#C8A03C]/30 hover:bg-white/5'
+                  ? 'bg-red-600 hover:bg-red-700 text-white font-bold glow-red shadow-lg'
+                  : 'bg-secondary-dark hover:bg-white/10 text-accent-gold border border-accent-gold/30 hover:border-accent-gold'
               }`}
             >
               <span>{isFullscreen ? '⏳' : '⛶'}</span>
