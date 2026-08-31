@@ -17,4 +17,6 @@ const playerSchema = mongoose.Schema({
     toObject: { virtuals: true }
 });
 
+playerSchema.index({ room: 1, status: 1, winningTeam: 1 });
+
 module.exports = mongoose.model('Player', playerSchema);

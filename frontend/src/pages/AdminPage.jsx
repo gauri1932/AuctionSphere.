@@ -113,6 +113,8 @@ const AdminPage = () => {
   // Live bidding fields
   const [soldPrice, setSoldPrice] = useState('');
   const [buyingTeamId, setBuyingTeamId] = useState('');
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Queue Category filter state
   const [queueFilterCategory, setQueueFilterCategory] = useState('All');
@@ -167,12 +169,12 @@ const AdminPage = () => {
     }
   }, [auctionState.highestBidder, teams]);
 
-  // Sync soldPrice input field when auctionState's currentBid changes
+  // Sync soldPrice input field when auctionState's currentBid changes (if not actively typing/focused)
   useEffect(() => {
-    if (auctionState && auctionState.currentBid !== undefined) {
+    if (!isInputFocused && auctionState && auctionState.currentBid !== undefined) {
       setSoldPrice(auctionState.currentBid);
     }
-  }, [auctionState.currentBid]);
+  }, [auctionState.currentBid, isInputFocused]);
 
   const showNotification = (text, type = 'success') => {
     setNotification({ text, type });
@@ -251,7 +253,7 @@ const AdminPage = () => {
     const needed = (rules.minPlayers || 5) - activeCount;
     if (needed <= 1) return 0;
 
-    const prices = Object.values(rules.basePrices || { A: 10000000, B: 5000000, C: 2000000 });
+    const prices = Object.values(rules.basePrices || { A: 1000000, B: 500000, C: 200000 });
     const minPrice = Math.min(...prices);
     return (needed - 1) * minPrice;
   };
@@ -333,6 +335,7 @@ const AdminPage = () => {
   // Mark Active Player as SOLD
   const markAsSold = (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
     if (!auctionState.livePlayer) return;
     if (!buyingTeamId) {
       showNotification('Please select a franchise team to award the player.', 'error');
@@ -348,7 +351,9 @@ const AdminPage = () => {
     const winningTeam = teams.find(t => (t._id || t.id) === buyingTeamId);
     if (!winningTeam) return;
 
+    setIsSubmitting(true);
     socket.timeout(5000).emit('markPlayerSold', { buyingTeamId, price }, (err, res) => {
+      setIsSubmitting(false);
       if (err) {
         showNotification('Sold operation timed out. Please check connection.', 'error');
         return;
@@ -815,6 +820,8 @@ const AdminPage = () => {
                             type="number"
                             value={soldPrice}
                             onChange={(e) => handleBidPriceChange(e.target.value)}
+                            onFocus={() => setIsInputFocused(true)}
+                            onBlur={() => setIsInputFocused(false)}
                             placeholder="Current Bid Price"
                             className="w-full max-w-sm px-4 py-3 bg-primary-dark border border-white/10 text-white font-bold rounded-lg focus:outline-none focus:border-accent-gold font-bold text-base"
                           />
@@ -896,15 +903,17 @@ const AdminPage = () => {
                         <div className="flex gap-4 pt-2">
                           <button
                             type="submit"
-                            className="flex-grow py-4 bg-green-600 hover:bg-green-700 text-white font-bold font-sporty text-xl tracking-widest uppercase rounded-xl transition-all duration-300 hover:scale-[1.02] cursor-pointer"
+                            disabled={isSubmitting}
+                            className="flex-grow py-4 bg-green-600 hover:bg-green-700 disabled:bg-green-800/40 disabled:cursor-not-allowed disabled:scale-100 text-white font-bold font-sporty text-xl tracking-widest uppercase rounded-xl transition-all duration-300 hover:scale-[1.02] cursor-pointer"
                           >
-                            🔨 Hammer Sold
+                            {isSubmitting ? '⏳ Submitting...' : '🔨 Hammer Sold'}
                           </button>
 
                           <button
                             type="button"
+                            disabled={isSubmitting}
                             onClick={markAsUnsold}
-                            className="py-4 px-6 bg-red-950/80 hover:bg-red-900/90 text-red-200 font-bold font-sporty text-xl tracking-widest uppercase rounded-xl border border-red-500/20 transition-all duration-300 cursor-pointer"
+                            className="py-4 px-6 bg-red-950/80 hover:bg-red-900/90 disabled:bg-red-950/30 disabled:text-red-400/40 disabled:cursor-not-allowed text-red-200 font-bold font-sporty text-xl tracking-widest uppercase rounded-xl border border-red-500/20 transition-all duration-300 cursor-pointer"
                           >
                             🚫 Pass Unsold
                           </button>

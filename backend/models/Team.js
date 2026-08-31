@@ -11,4 +11,6 @@ const teamSchema = mongoose.Schema({
     toObject: { virtuals: true }
 });
 
+teamSchema.index({ room: 1 });
+
 module.exports = mongoose.model('Team', teamSchema);

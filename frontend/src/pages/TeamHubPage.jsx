@@ -12,7 +12,7 @@ const TeamHubPage = () => {
   const [players, setPlayers] = useState([]);
   const [teams, setTeams] = useState([]);
   const [rules, setRules] = useState({
-    basePrices: { A: 10000000, B: 5000000, C: 2000000 },
+    basePrices: { A: 1000000, B: 500000, C: 200000 },
     slots: { A: 2, B: 3, C: 5 },
     minPlayers: 5,
     maxPlayers: 15

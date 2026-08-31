@@ -235,7 +235,18 @@ module.exports = (io, socket) => {
 
         try {
             const { teamId, teamName, bidAmount } = data;
-            const state = await AuctionState.findOne({ room: roomId });
+
+            // 1. Fetch State, Team, and Rules concurrently
+            const teamQuery = (teamId && mongoose.Types.ObjectId.isValid(teamId))
+                ? { _id: teamId, room: roomId }
+                : { name: teamName, room: roomId };
+
+            const [state, team, rule] = await Promise.all([
+                AuctionState.findOne({ room: roomId }),
+                Team.findOne(teamQuery),
+                Rule.findOne({ room: roomId })
+            ]);
+
             if (!state || state.liveStatus !== 'live' || !state.livePlayer) {
                 const errMsg = 'No live auction is active.';
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
@@ -249,7 +260,6 @@ module.exports = (io, socket) => {
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
-            const team = await Team.findOne({ _id: teamId, room: roomId }) || await Team.findOne({ name: teamName, room: roomId });
             if (!team) {
                 const errMsg = 'Team not found in this room.';
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
@@ -263,19 +273,25 @@ module.exports = (io, socket) => {
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
+            const activePlayerCat = state.livePlayer.category;
+
+            // 2. Fetch team players counts concurrently
+            const [teamPlayersCount, teamCatCount] = await Promise.all([
+                Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name }),
+                Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name, category: activePlayerCat })
+            ]);
+
+            const activeRule = rule || DEFAULT_RULES;
+
             // Check global squad size limit
-            const teamPlayersCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name });
-            const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
-            if (teamPlayersCount >= rule.maxPlayers) {
-                const errMsg = `Max roster limit reached: ${team.name} already has ${rule.maxPlayers} players.`;
+            if (teamPlayersCount >= activeRule.maxPlayers) {
+                const errMsg = `Max roster limit reached: ${team.name} already has ${activeRule.maxPlayers} players.`;
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
             // Check Category slot limit
-            const activePlayerCat = state.livePlayer.category;
-            const teamCatCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name, category: activePlayerCat });
-            const maxCatSlots = (rule.slots && rule.slots[activePlayerCat]) || 999;
+            const maxCatSlots = (activeRule.slots && activeRule.slots[activePlayerCat]) || 999;
             if (teamCatCount >= maxCatSlots) {
                 const errMsg = `Category Slot limit reached: ${team.name} already has ${teamCatCount} players in Category ${activePlayerCat}.`;
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
@@ -283,13 +299,13 @@ module.exports = (io, socket) => {
             }
 
             // Check budget solvency for min required players
-            const needed = rule.minPlayers - teamPlayersCount;
+            const needed = activeRule.minPlayers - teamPlayersCount;
             if (needed > 1) {
-                const prices = Object.values(rule.basePrices || DEFAULT_RULES.basePrices);
+                const prices = Object.values(activeRule.basePrices || DEFAULT_RULES.basePrices);
                 const minPrice = Math.min(...prices);
                 const requiredFundsForOthers = (needed - 1) * minPrice;
                 if (team.budget - bidAmount < requiredFundsForOthers) {
-                    const errMsg = `Solvency Lockout: Placing this bid will leave ${team.name} with insufficient funds to reach the minimum roster size of ${rule.minPlayers} players.`;
+                    const errMsg = `Solvency Lockout: Placing this bid will leave ${team.name} with insufficient funds to reach the minimum roster size of ${activeRule.minPlayers} players.`;
                     if (typeof callback === 'function') return callback({ success: false, error: errMsg });
                     return socket.emit('bidRejected', { message: errMsg });
                 }
@@ -357,6 +373,11 @@ module.exports = (io, socket) => {
             const state = await AuctionState.findOne({ room: roomId });
             if (!state || !state.livePlayer) {
                 if (typeof callback === 'function') return callback({ success: false, error: 'No live player active.' });
+                return;
+            }
+
+            if (state.liveStatus === 'sold') {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Player is already sold.' });
                 return;
             }
 
