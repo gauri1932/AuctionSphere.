@@ -427,16 +427,17 @@ const AdminPage = () => {
 
         // Standardize headers and map fields
         const importedPlayers = parsedData.map((row, index) => {
-          const name = row['Player Name'] || row['name'] || row['Name'] || `Player #${index + 1}`;
+          const name = row['Name of the Player'] || row['Player Name'] || row['name'] || row['Name'] || row['Player'] || `Player #${index + 1}`;
 
           let category = (row['category'] || row['Category'] || '').trim().toUpperCase();
+          if (category === 'A+') category = 'A'; // Normalize A+ to category A
           if (category !== 'A' && category !== 'B' && category !== 'C') {
             // Fallback categorization based on name and role for demo imports lacking a category column
             const lowerName = name.toLowerCase();
-            const lowerRole = (row['role'] || row['Role'] || '').toLowerCase();
+            const lowerRole = (row['role'] || row['Role'] || row['Strength'] || row['strength'] || '').toLowerCase();
             if (lowerName.includes('kohli') || lowerName.includes('sharma') || lowerName.includes('bumrah') || lowerName.includes('dhoni') || lowerName.includes('pandya')) {
               category = 'A';
-            } else if (lowerRole.includes('batsman') || lowerRole.includes('all-rounder') || lowerName.includes('stokes') || lowerName.includes('root') || lowerName.includes('williamson') || lowerName.includes('babar')) {
+            } else if (lowerRole.includes('batsman') || lowerRole.includes('all-rounder') || lowerRole.includes('all rounder') || lowerName.includes('stokes') || lowerName.includes('root') || lowerName.includes('williamson') || lowerName.includes('babar')) {
               category = 'B';
             } else {
               category = 'C';
@@ -456,9 +457,17 @@ const AdminPage = () => {
           }
 
           const rawPhoto = (row['Photo URL'] || row['photo'] || row['Photo'] || row['photo_url'] || row['photoUrl'] || '').trim();
-          const photo = (rawPhoto.toLowerCase().startsWith('http://') || rawPhoto.toLowerCase().startsWith('https://'))
+          let photo = (rawPhoto.toLowerCase().startsWith('http://') || rawPhoto.toLowerCase().startsWith('https://'))
             ? rawPhoto
             : `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name.replace(/\s+/g, ''))}`;
+
+          // Transform Google Drive links to bypass cookie/hotlink restrictions
+          if (photo.includes('drive.google.com')) {
+            const match = photo.match(/[?&]id=([^&]+)/) || photo.match(/\/file\/d\/([^/]+)/);
+            if (match && match[1]) {
+              photo = `https://lh3.googleusercontent.com/d/${match[1]}`;
+            }
+          }
 
           return {
             name,
