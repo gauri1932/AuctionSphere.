@@ -220,8 +220,12 @@ router.post('/players', requireRoomAdmin, async (req, res) => {
         }
 
         const allPlayers = await Player.find({ room: roomId });
+        const freshTeams = await getReconciledTeams(roomId);
         const io = req.app.get('io');
-        if (io) io.to(roomId).emit('playersUpdated', allPlayers);
+        if (io) {
+            io.to(roomId).emit('playersUpdated', allPlayers);
+            io.to(roomId).emit('teamsUpdated', freshTeams);
+        }
 
         res.status(Array.isArray(data) ? 200 : 201).json(result);
     } catch (err) {
@@ -234,8 +238,12 @@ router.delete('/players', requireRoomAdmin, async (req, res) => {
     try {
         const roomId = req.query.roomId;
         await Player.deleteMany({ room: roomId });
+        const freshTeams = await getReconciledTeams(roomId);
         const io = req.app.get('io');
-        if (io) io.to(roomId).emit('playersUpdated', []);
+        if (io) {
+            io.to(roomId).emit('playersUpdated', []);
+            io.to(roomId).emit('teamsUpdated', freshTeams);
+        }
         res.json({ message: 'All players deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });

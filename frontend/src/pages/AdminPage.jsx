@@ -580,7 +580,7 @@ const AdminPage = () => {
     const newPlayer = {
       name: newPlayerName.trim(),
       category: newPlayerCategory,
-      basePrice: parseInt(newPlayerBasePrice, 10) || 10000000,
+      basePrice: parseInt(newPlayerBasePrice, 10) || (rules.basePrices?.[newPlayerCategory] || 1000000),
       age: newPlayerAge ? parseInt(newPlayerAge, 10) : null,
       status: 'Pending',
       finalPrice: 0,

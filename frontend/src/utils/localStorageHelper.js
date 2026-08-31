@@ -163,16 +163,19 @@ export const getTeams = async () => {
 
 // Format currency in Indian Rupees format (INR)
 export const formatRupees = (amount) => {
-  if (amount === undefined || amount === null) return '₹0';
+  if (amount === undefined || amount === null || isNaN(Number(amount))) return '₹0';
   
-  const amountStr = Math.round(amount).toString();
-  let lastThree = amountStr.substring(amountStr.length - 3);
-  const otherNumbers = amountStr.substring(0, amountStr.length - 3);
+  const num = Math.round(Number(amount));
+  const isNegative = num < 0;
+  const absStr = Math.abs(num).toString();
+  
+  let lastThree = absStr.substring(absStr.length - 3);
+  const otherNumbers = absStr.substring(0, absStr.length - 3);
   if (otherNumbers !== '') {
     lastThree = ',' + lastThree;
   }
   const formatted = otherNumbers.replace(/\B(?=(\d{2})+(?!\d))/g, ",") + lastThree;
-  return '₹' + formatted;
+  return (isNegative ? '-₹' : '₹') + formatted;
 };
 
 // Parse a simple CSV string into objects
