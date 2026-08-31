@@ -430,8 +430,7 @@ module.exports = (io, socket) => {
                     teamId: winningTeam._id,
                     teamName: winningTeam.name,
                     price: price
-                },
-                bidHistory: []
+                }
             };
             Object.assign(state, newState);
             await state.save();
@@ -532,6 +531,133 @@ module.exports = (io, socket) => {
             if (typeof callback === 'function') {
                 callback({ success: false, error: err.message });
             }
+        }
+    });
+
+    // 6.5. Undo Last Bid (Admin restricted)
+    socket.on('undoLastBid', async (callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
+        if (!socket.isAdmin) {
+            if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
+            return;
+        }
+
+        try {
+            const state = await AuctionState.findOne({ room: roomId });
+            if (!state || state.liveStatus !== 'live' || !state.livePlayer) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'No live auction is active.' });
+                return;
+            }
+
+            if (!state.bidHistory || state.bidHistory.length === 0) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'No bids to undo.' });
+                return;
+            }
+
+            // Remove the last bid
+            state.bidHistory.pop();
+
+            // Set current bid to the previous bid, or basePrice if no bids left
+            if (state.bidHistory.length > 0) {
+                const prevBid = state.bidHistory[state.bidHistory.length - 1];
+                state.currentBid = prevBid.bidAmount;
+                state.highestBidder = prevBid.teamName;
+            } else {
+                const rules = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+                state.currentBid = (rules.basePrices && rules.basePrices[state.livePlayer.category] !== undefined)
+                    ? rules.basePrices[state.livePlayer.category]
+                    : state.livePlayer.basePrice;
+                state.highestBidder = null;
+            }
+
+            await state.save();
+
+            io.to(roomId).emit('auctionStateUpdated', state);
+
+            if (typeof callback === 'function') {
+                callback({ success: true, data: state });
+            }
+        } catch (err) {
+            console.error('Error in undoLastBid:', err);
+            if (typeof callback === 'function') callback({ success: false, error: err.message });
+        }
+    });
+
+    // 6.6. Undo Player Sale (Admin restricted)
+    socket.on('undoPlayerSale', async (data, callback) => {
+        const roomId = getRoomId(callback);
+        if (!roomId) return;
+
+        if (!socket.isAdmin) {
+            if (typeof callback === 'function') return callback({ success: false, error: 'Unauthorized' });
+            return;
+        }
+
+        try {
+            const { playerId } = data;
+            const player = await Player.findOne({ _id: playerId, room: roomId });
+            if (!player || player.status !== 'Sold') {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Sold player not found.' });
+                return;
+            }
+
+            // Find the team to refund
+            const team = await Team.findOne({ name: player.winningTeam, room: roomId });
+            if (team) {
+                team.budget += player.finalPrice;
+                await team.save();
+            }
+
+            // Restore player status back to Live
+            player.status = 'Live';
+            player.finalPrice = 0;
+            player.winningTeam = null;
+            await player.save();
+
+            // Restore AuctionState
+            const state = await AuctionState.findOne({ room: roomId });
+            if (state) {
+                state.livePlayer = player;
+                state.liveStatus = 'live';
+                state.soldInfo = null;
+
+                // Rollback last bid if it was the team's winning bid
+                if (state.bidHistory && state.bidHistory.length > 0) {
+                    state.bidHistory.pop(); // Remove the accidental winning bid
+                }
+
+                // Set current bid to the previous bid, or basePrice if no bids left
+                if (state.bidHistory && state.bidHistory.length > 0) {
+                    const prevBid = state.bidHistory[state.bidHistory.length - 1];
+                    state.currentBid = prevBid.bidAmount;
+                    state.highestBidder = prevBid.teamName;
+                } else {
+                    const rules = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+                    state.currentBid = (rules.basePrices && rules.basePrices[player.category] !== undefined)
+                        ? rules.basePrices[player.category]
+                        : player.basePrice;
+                    state.highestBidder = null;
+                }
+
+                await state.save();
+            }
+
+            const freshPlayers = await Player.find({ room: roomId });
+            const freshTeams = await Team.find({ room: roomId });
+
+            // Broadcast updates
+            io.to(roomId).emit('playersUpdated', freshPlayers);
+            io.to(roomId).emit('teamsUpdated', freshTeams);
+            if (state) io.to(roomId).emit('auctionStateUpdated', state);
+
+            if (typeof callback === 'function') {
+                callback({ success: true, data: { players: freshPlayers, teams: freshTeams, state } });
+            }
+        } catch (err) {
+            console.error('Error in undoPlayerSale:', err);
+            if (typeof callback === 'function') callback({ success: false, error: err.message });
         }
     });
 

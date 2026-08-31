@@ -414,6 +414,52 @@ const AdminPage = () => {
     });
   };
 
+  // Undo last active bid (Live auction stage)
+  const handleUndoLastBid = () => {
+    if (!auctionState.livePlayer) return;
+    if (!auctionState.bidHistory || auctionState.bidHistory.length === 0) {
+      showNotification('No bids to undo.', 'warning');
+      return;
+    }
+
+    const confirmMsg = `Are you sure you want to undo the last bid of ${formatRupees(auctionState.currentBid)}?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    socket.timeout(5000).emit('undoLastBid', (err, res) => {
+      if (err) {
+        showNotification('Operation timed out. Please check connection.', 'error');
+        return;
+      }
+      if (res.success) {
+        setAuctionState(res.data);
+        showNotification('Successfully rolled back the last bid.');
+      } else {
+        showNotification(res.error, 'error');
+      }
+    });
+  };
+
+  // Undo player sale (Rollback completed sale to previous bid)
+  const handleUndoSale = (player) => {
+    const confirmMsg = `Are you sure you want to undo the sale of ${player.name} to ${player.winningTeam} for ${formatRupees(player.finalPrice)}?\n\nThis will refund the team's budget, restore the player back to the live stage, and roll the bid back to the previous highest bid.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    socket.timeout(5000).emit('undoPlayerSale', { playerId: player._id || player.id }, (err, res) => {
+      if (err) {
+        showNotification('Undo operation timed out. Please check connection.', 'error');
+        return;
+      }
+      if (res.success) {
+        setPlayers(res.data.players);
+        setTeams(res.data.teams);
+        setAuctionState(res.data.state);
+        showNotification(`Successfully restored ${player.name} to the active draft stage!`);
+      } else {
+        showNotification(res.error, 'error');
+      }
+    });
+  };
+
   // CSV File Uploader Handler
   const handleCSVUpload = (e) => {
     const file = e.target.files[0];
@@ -816,15 +862,27 @@ const AdminPage = () => {
                           <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2 text-left">
                             Current Bid (₹)
                           </label>
-                          <input
-                            type="number"
-                            value={soldPrice}
-                            onChange={(e) => handleBidPriceChange(e.target.value)}
-                            onFocus={() => setIsInputFocused(true)}
-                            onBlur={() => setIsInputFocused(false)}
-                            placeholder="Current Bid Price"
-                            className="w-full max-w-sm px-4 py-3 bg-primary-dark border border-white/10 text-white font-bold rounded-lg focus:outline-none focus:border-accent-gold font-bold text-base"
-                          />
+                          <div className="flex flex-col sm:flex-row gap-3">
+                            <input
+                              type="number"
+                              value={soldPrice}
+                              onChange={(e) => handleBidPriceChange(e.target.value)}
+                              onFocus={() => setIsInputFocused(true)}
+                              onBlur={() => setIsInputFocused(false)}
+                              placeholder="Current Bid Price"
+                              className="w-full max-w-sm px-4 py-3 bg-primary-dark border border-white/10 text-white font-bold rounded-lg focus:outline-none focus:border-accent-gold font-bold text-base"
+                            />
+                            {auctionState.bidHistory && auctionState.bidHistory.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={handleUndoLastBid}
+                                className="px-4 py-3 bg-red-950/80 hover:bg-red-900 border border-red-500/30 hover:border-red-500 text-red-200 font-bold text-xs uppercase tracking-wider rounded-lg transition duration-300 flex items-center justify-center space-x-1 cursor-pointer"
+                              >
+                                <span>↩️</span>
+                                <span>Undo Last Bid</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         <div>
@@ -959,8 +1017,63 @@ const AdminPage = () => {
                         </div>
                       );
                     })
-                  )}
-                </div>
+              </div>
+
+              {/* Recent Sales History */}
+              <div className="glass-panel rounded-2xl border border-white/10 p-6 shadow-xl">
+                <h2 className="text-2xl font-sporty tracking-wider text-accent-gold mb-4 uppercase flex items-center gap-2">
+                  <span>📜</span>
+                  <span>Recent Sales History</span>
+                </h2>
+                {players.filter(p => p.status === 'Sold').length === 0 ? (
+                  <p className="text-gray-500 text-sm">No players have been sold yet.</p>
+                ) : (
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
+                    {players
+                      .filter(p => p.status === 'Sold')
+                      .map(p => (
+                        <div
+                          key={p._id || p.id}
+                          className="bg-primary-dark/50 border border-white/5 rounded-xl p-3 flex items-center justify-between gap-4"
+                        >
+                          <div className="flex items-center gap-3">
+                            <img
+                              src={p.photo}
+                              alt={p.name}
+                              className="w-10 h-10 rounded-full border border-white/10 object-cover"
+                            />
+                            <div>
+                              <div className="font-bold text-sm text-white">{p.name}</div>
+                              <div className="text-[10px] text-gray-400">
+                                Category {p.category} | Base: {formatRupees(p.basePrice)}
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-4">
+                            <div className="text-right">
+                              <div className="text-xs font-black text-green-400 font-sporty">
+                                {formatRupees(p.finalPrice)}
+                              </div>
+                              <div className="text-[9px] uppercase tracking-wider font-bold text-accent-gold">
+                                Sold to {p.winningTeam}
+                              </div>
+                            </div>
+                            
+                            <button
+                              type="button"
+                              onClick={() => handleUndoSale(p)}
+                              className="px-2.5 py-1.5 bg-red-950/60 hover:bg-red-900 border border-red-500/20 hover:border-red-500 text-red-200 font-bold text-[10px] uppercase tracking-wider rounded transition duration-300 flex items-center gap-1 cursor-pointer"
+                              title="Undo sale, refund team budget, and reopen bidding on live stage"
+                            >
+                              <span>🔄</span>
+                              <span>Undo</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </div>
             </div>
 
