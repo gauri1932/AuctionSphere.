@@ -41,6 +41,29 @@ const DEFAULT_AUCTION_STATE = {
 module.exports = (io, socket) => {
     console.log(`New client socket connected: ${socket.id}`);
 
+    // Helper to calculate exact reconciled budget for all teams from sold players (source of truth)
+    const getReconciledTeams = async (roomId) => {
+        const teams = await Team.find({ room: roomId });
+        const soldPlayers = await Player.find({ room: roomId, status: 'Sold' });
+
+        const updates = [];
+        for (const team of teams) {
+            const teamSoldPlayers = soldPlayers.filter(p => p.winningTeam === team.name);
+            const totalSpent = teamSoldPlayers.reduce((sum, p) => sum + (Number(p.finalPrice) || 0), 0);
+            const initial = Number(team.initialBudget) || 10000000;
+            const correctBudget = Math.max(0, initial - totalSpent);
+
+            if (team.budget !== correctBudget) {
+                team.budget = correctBudget;
+                updates.push(team.save());
+            }
+        }
+        if (updates.length > 0) {
+            await Promise.all(updates);
+        }
+        return teams;
+    };
+
     // Helper to ensure socket has joined a room before running database/broadcast actions
     const getRoomId = (callback) => {
         if (!socket.roomId) {
@@ -100,9 +123,9 @@ module.exports = (io, socket) => {
             socket.roomId = roomId.toString();
             socket.isAdmin = isAdmin;
 
-            // Fetch room state
+            // Fetch room state with reconciled budgets
             const players = await Player.find({ room: roomId });
-            const teams = await Team.find({ room: roomId });
+            const teams = await getReconciledTeams(roomId);
             let rules = await Rule.findOne({ room: roomId });
             if (!rules) {
                 rules = new Rule({ room: roomId, ...DEFAULT_RULES });
@@ -136,7 +159,7 @@ module.exports = (io, socket) => {
 
         try {
             const players = await Player.find({ room: roomId });
-            const teams = await Team.find({ room: roomId });
+            const teams = await getReconciledTeams(roomId);
             let rules = await Rule.findOne({ room: roomId });
             if (!rules) {
                 rules = new Rule({ room: roomId, ...DEFAULT_RULES });
@@ -409,10 +432,6 @@ module.exports = (io, socket) => {
                 return;
             }
 
-            // Deduct winning team budget
-            winningTeam.budget -= price;
-            await winningTeam.save();
-
             // Mark Player as Sold
             const player = await Player.findOne({ _id: state.livePlayer._id, room: roomId });
             if (player) {
@@ -421,6 +440,9 @@ module.exports = (io, socket) => {
                 player.winningTeam = winningTeam.name;
                 await player.save();
             }
+
+            // Reconcile teams budget mathematically from all sold players
+            const freshTeams = await getReconciledTeams(roomId);
 
             // Set state to SOLD screen
             const newState = {
@@ -436,7 +458,6 @@ module.exports = (io, socket) => {
             await state.save();
 
             const freshPlayers = await Player.find({ room: roomId });
-            const freshTeams = await Team.find({ room: roomId });
 
             // Broadcast updates to room
             io.to(roomId).emit('playersUpdated', freshPlayers);
@@ -487,13 +508,15 @@ module.exports = (io, socket) => {
             await state.save();
 
             const freshPlayers = await Player.find({ room: roomId });
+            const freshTeams = await getReconciledTeams(roomId);
 
             // Broadcast updates to room
             io.to(roomId).emit('playersUpdated', freshPlayers);
+            io.to(roomId).emit('teamsUpdated', freshTeams);
             io.to(roomId).emit('auctionStateUpdated', state);
 
             if (typeof callback === 'function') {
-                callback({ success: true, data: { players: freshPlayers, state } });
+                callback({ success: true, data: { players: freshPlayers, teams: freshTeams, state } });
             }
         } catch (err) {
             console.error('Error in markPlayerUnsold:', err);
@@ -603,49 +626,55 @@ module.exports = (io, socket) => {
                 return;
             }
 
-            // Find the team to refund
-            const team = await Team.findOne({ name: player.winningTeam, room: roomId });
-            if (team) {
-                team.budget += player.finalPrice;
-                await team.save();
-            }
-
-            // Restore player status back to Live
-            player.status = 'Live';
+            // 1. Reset player fields
+            player.status = 'Pending';
             player.finalPrice = 0;
             player.winningTeam = null;
             await player.save();
 
-            // Restore AuctionState
+            // 2. Reconcile all teams so budget is mathematically guaranteed to be refunded
+            const freshTeams = await getReconciledTeams(roomId);
+
+            // 3. Restore AuctionState
             const state = await AuctionState.findOne({ room: roomId });
             if (state) {
-                state.livePlayer = player;
-                state.liveStatus = 'live';
-                state.soldInfo = null;
+                const isCurrentlyOnStage = state.livePlayer && state.livePlayer._id.toString() === player._id.toString();
+                const isStageIdle = state.liveStatus === 'waiting' || state.liveStatus === 'sold' || !state.livePlayer;
 
-                // Rollback last bid if it was the team's winning bid
-                if (state.bidHistory && state.bidHistory.length > 0) {
-                    state.bidHistory.pop(); // Remove the accidental winning bid
+                if (isCurrentlyOnStage || isStageIdle) {
+                    // Ensure NO other player in database is marked Live
+                    await Player.updateMany({ room: roomId, status: 'Live', _id: { $ne: player._id } }, { status: 'Pending' });
+
+                    player.status = 'Live';
+                    await player.save();
+
+                    state.livePlayer = player;
+                    state.liveStatus = 'live';
+                    state.soldInfo = null;
+
+                    // Rollback last bid if it was the team's winning bid
+                    if (state.bidHistory && state.bidHistory.length > 0) {
+                        state.bidHistory.pop(); // Remove the accidental winning bid
+                    }
+
+                    // Set current bid to the previous bid, or basePrice if no bids left
+                    if (state.bidHistory && state.bidHistory.length > 0) {
+                        const prevBid = state.bidHistory[state.bidHistory.length - 1];
+                        state.currentBid = prevBid.bidAmount;
+                        state.highestBidder = prevBid.teamName;
+                    } else {
+                        const rules = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+                        state.currentBid = (rules.basePrices && rules.basePrices[player.category] !== undefined)
+                            ? rules.basePrices[player.category]
+                            : player.basePrice;
+                        state.highestBidder = null;
+                    }
+
+                    await state.save();
                 }
-
-                // Set current bid to the previous bid, or basePrice if no bids left
-                if (state.bidHistory && state.bidHistory.length > 0) {
-                    const prevBid = state.bidHistory[state.bidHistory.length - 1];
-                    state.currentBid = prevBid.bidAmount;
-                    state.highestBidder = prevBid.teamName;
-                } else {
-                    const rules = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
-                    state.currentBid = (rules.basePrices && rules.basePrices[player.category] !== undefined)
-                        ? rules.basePrices[player.category]
-                        : player.basePrice;
-                    state.highestBidder = null;
-                }
-
-                await state.save();
             }
 
             const freshPlayers = await Player.find({ room: roomId });
-            const freshTeams = await Team.find({ room: roomId });
 
             // Broadcast updates
             io.to(roomId).emit('playersUpdated', freshPlayers);

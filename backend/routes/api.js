@@ -245,12 +245,35 @@ router.delete('/players', requireRoomAdmin, async (req, res) => {
 
 // --- TEAMS API ---
 
+// Helper to calculate exact reconciled budget for all teams from sold players (source of truth)
+const getReconciledTeams = async (roomId) => {
+    const teams = await Team.find({ room: roomId });
+    const soldPlayers = await Player.find({ room: roomId, status: 'Sold' });
+
+    const updates = [];
+    for (const team of teams) {
+        const teamSoldPlayers = soldPlayers.filter(p => p.winningTeam === team.name);
+        const totalSpent = teamSoldPlayers.reduce((sum, p) => sum + (Number(p.finalPrice) || 0), 0);
+        const initial = Number(team.initialBudget) || 10000000;
+        const correctBudget = Math.max(0, initial - totalSpent);
+
+        if (team.budget !== correctBudget) {
+            team.budget = correctBudget;
+            updates.push(team.save());
+        }
+    }
+    if (updates.length > 0) {
+        await Promise.all(updates);
+    }
+    return teams;
+};
+
 // GET: Fetch all teams in a room
 router.get('/teams', async (req, res) => {
     try {
         const { roomId } = req.query;
         if (!roomId) return res.status(400).json({ error: 'Missing roomId' });
-        const teams = await Team.find({ room: roomId });
+        const teams = await getReconciledTeams(roomId);
         res.json(teams);
     } catch (err) {
         res.status(500).json({ error: err.message });

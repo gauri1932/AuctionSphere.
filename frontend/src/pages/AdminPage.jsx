@@ -1023,9 +1023,12 @@ const AdminPage = () => {
 
               {/* Recent Sales History */}
               <div className="glass-panel rounded-2xl border border-white/10 p-6 shadow-xl">
-                <h2 className="text-2xl font-sporty tracking-wider text-accent-gold mb-4 uppercase flex items-center gap-2">
-                  <span>📜</span>
-                  <span>Recent Sales History</span>
+                <h2 className="text-2xl font-sporty tracking-wider text-accent-gold mb-4 uppercase flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span>📜</span>
+                    <span>Recent Sales History ({players.filter(p => p.status === 'Sold').length})</span>
+                  </div>
+                  <span className="text-xs text-gray-400 font-sans normal-case font-normal">Latest sales on top</span>
                 </h2>
                 {players.filter(p => p.status === 'Sold').length === 0 ? (
                   <p className="text-gray-500 text-sm">No players have been sold yet.</p>
@@ -1033,6 +1036,8 @@ const AdminPage = () => {
                   <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
                     {players
                       .filter(p => p.status === 'Sold')
+                      .slice()
+                      .reverse()
                       .map(p => (
                         <div
                           key={p._id || p.id}
