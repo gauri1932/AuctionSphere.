@@ -1017,6 +1017,8 @@ const AdminPage = () => {
                         </div>
                       );
                     })
+                  )}
+                </div>
               </div>
 
               {/* Recent Sales History */}
