@@ -5,6 +5,7 @@ import {
   formatRupees,
   parseCSV
 } from '../utils/localStorageHelper';
+import { validateBidSolvency } from '../utils/solvencyEngine';
 import { socket } from '../utils/socket';
 import { API_URL } from '../utils/apiConfig';
 import './AdminPage.css';
@@ -247,15 +248,24 @@ const AdminPage = () => {
     }
   };
 
-  // Helper to calculate minimum budget a team must reserve to fill their minimum required roster size
-  const calculateMinReservedBudget = (team, activePlayerCat = null) => {
-    const activeCount = players.filter(p => p.status === 'Sold' && p.winningTeam === team.name).length;
-    const needed = (rules.minPlayers || 5) - activeCount;
-    if (needed <= 1) return 0;
+  // Helper to calculate category-aware solvency and mandatory reserved budget
+  const getTeamSolvency = (team, proposedBidAmount, activePlayerCat = null) => {
+    const activeCat = activePlayerCat || auctionState.livePlayer?.category;
+    const teamSoldPlayers = players.filter(p => p.status === 'Sold' && p.winningTeam === team.name);
+    const currentOwned = {};
+    for (const p of teamSoldPlayers) {
+      if (p.category) {
+        currentOwned[p.category] = (currentOwned[p.category] || 0) + 1;
+      }
+    }
 
-    const prices = Object.values(rules.basePrices || { A: 1000000, B: 500000, C: 200000 });
-    const minPrice = Math.min(...prices);
-    return (needed - 1) * minPrice;
+    return validateBidSolvency({
+      teamBudget: team.budget,
+      categoryConfigs: rules,
+      currentOwned,
+      proposedBidCategory: activeCat,
+      proposedBidAmount
+    });
   };
 
   // Handle franchise team selection and auto-increment current bid
@@ -284,14 +294,15 @@ const AdminPage = () => {
       return;
     }
 
-    const minReserved = calculateMinReservedBudget(team, auctionState.livePlayer.category);
     const isFirstBid = !auctionState.highestBidder;
     const potentialBid = isFirstBid
       ? (parseInt(soldPrice, 10) || 0)
       : (parseInt(soldPrice, 10) || 0) + 50000;
 
-    if (team.budget - potentialBid < minReserved) {
-      showNotification(`Solvency Lockout: ${team.name} cannot afford the bid of ${formatRupees(potentialBid)}!`, 'error');
+    const solvency = getTeamSolvency(team, potentialBid, activePlayerCat);
+
+    if (!solvency.isAllowed) {
+      showNotification(solvency.rejectionMessage, 'error');
       return;
     }
 
@@ -910,12 +921,12 @@ const AdminPage = () => {
                                 const maxCatSlots = rules.slots?.[activePlayerCat] || 999;
                                 const isCatSlotsFull = catCount >= maxCatSlots;
 
-                                const minReserved = calculateMinReservedBudget(t, activePlayerCat);
                                 const isFirstBid = !auctionState.highestBidder;
                                 const potentialBid = isFirstBid 
                                   ? (parseInt(soldPrice, 10) || 0)
                                   : (parseInt(soldPrice, 10) || 0) + 50000;
-                                const isSolvent = !isMaxLimitReached && !isCatSlotsFull && (t.budget - potentialBid >= minReserved);
+                                const solvency = getTeamSolvency(t, potentialBid, activePlayerCat);
+                                const isSolvent = !isMaxLimitReached && !isCatSlotsFull && solvency.isAllowed;
                                 const isLeading = auctionState.highestBidder === t.name;
 
                                 return (
@@ -930,7 +941,7 @@ const AdminPage = () => {
                                           ? 'bg-primary-dark/20 border-red-500/20 text-gray-600 cursor-not-allowed opacity-40'
                                           : 'bg-primary-dark border-white/10 text-gray-300 hover:border-white/30'
                                        }`}
-                                    title={isLeading ? 'Leading Bidder' : isMaxLimitReached ? `Roster Full: Maximum limit of ${rules.maxPlayers} reached` : isCatSlotsFull ? `Category ${activePlayerCat} Full: Maximum limit of ${maxCatSlots} reached` : !isSolvent ? `Insolvent: Budget must be at least ${formatRupees(potentialBid)}` : ''}
+                                    title={isLeading ? 'Leading Bidder' : isMaxLimitReached ? `Roster Full: Maximum limit of ${rules.maxPlayers} reached` : isCatSlotsFull ? `Category ${activePlayerCat} Full: Maximum limit of ${maxCatSlots} reached` : !isSolvent ? solvency.rejectionMessage : `Max allowed bid: ${formatRupees(solvency.maxBid)}`}
                                   >
                                     <span className="text-2xl select-none">{emoji}</span>
                                     <div className="min-w-0 flex-grow">

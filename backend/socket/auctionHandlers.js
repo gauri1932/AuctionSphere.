@@ -4,6 +4,7 @@ const Team = require('../models/Team');
 const Rule = require('../models/Rule');
 const AuctionState = require('../models/AuctionState');
 const Room = require('../models/Room');
+const { validateBidSolvency } = require('../utils/solvencyEngine');
 
 const DEFAULT_RULES = {
     basePrices: { A: 1000000, B: 500000, C: 200000 },
@@ -289,49 +290,49 @@ module.exports = (io, socket) => {
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
-            // Solvency check
-            if (team.budget < bidAmount) {
-                const errMsg = `Solvency Lockout: ${team.name} cannot afford the bid of ₹${bidAmount.toLocaleString()}`;
-                if (typeof callback === 'function') return callback({ success: false, error: errMsg });
-                return socket.emit('bidRejected', { message: errMsg });
-            }
-
             const activePlayerCat = state.livePlayer.category;
-
-            // 2. Fetch team players counts concurrently
-            const [teamPlayersCount, teamCatCount] = await Promise.all([
-                Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name }),
-                Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name, category: activePlayerCat })
-            ]);
-
             const activeRule = rule || DEFAULT_RULES;
 
+            // Fetch all sold players for this team to evaluate live squad composition
+            const teamSoldPlayers = await Player.find({ room: roomId, status: 'Sold', winningTeam: team.name });
+
             // Check global squad size limit
-            if (teamPlayersCount >= activeRule.maxPlayers) {
+            if (teamSoldPlayers.length >= activeRule.maxPlayers) {
                 const errMsg = `Max roster limit reached: ${team.name} already has ${activeRule.maxPlayers} players.`;
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
+            // Map current owned players count per category
+            const currentOwned = {};
+            for (const p of teamSoldPlayers) {
+                if (p.category) {
+                    currentOwned[p.category] = (currentOwned[p.category] || 0) + 1;
+                }
+            }
+
             // Check Category slot limit
             const maxCatSlots = (activeRule.slots && activeRule.slots[activePlayerCat]) || 999;
+            const teamCatCount = currentOwned[activePlayerCat] || 0;
             if (teamCatCount >= maxCatSlots) {
                 const errMsg = `Category Slot limit reached: ${team.name} already has ${teamCatCount} players in Category ${activePlayerCat}.`;
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
-            // Check budget solvency for min required players
-            const needed = activeRule.minPlayers - teamPlayersCount;
-            if (needed > 1) {
-                const prices = Object.values(activeRule.basePrices || DEFAULT_RULES.basePrices);
-                const minPrice = Math.min(...prices);
-                const requiredFundsForOthers = (needed - 1) * minPrice;
-                if (team.budget - bidAmount < requiredFundsForOthers) {
-                    const errMsg = `Solvency Lockout: Placing this bid will leave ${team.name} with insufficient funds to reach the minimum roster size of ${activeRule.minPlayers} players.`;
-                    if (typeof callback === 'function') return callback({ success: false, error: errMsg });
-                    return socket.emit('bidRejected', { message: errMsg });
-                }
+            // Perform Category-Aware Solvency Validation across ALL categories
+            const solvency = validateBidSolvency({
+                teamBudget: team.budget,
+                categoryConfigs: activeRule,
+                currentOwned,
+                proposedBidCategory: activePlayerCat,
+                proposedBidAmount: bidAmount
+            });
+
+            if (!solvency.isAllowed) {
+                const errMsg = solvency.rejectionMessage;
+                if (typeof callback === 'function') return callback({ success: false, error: errMsg });
+                return socket.emit('bidRejected', { message: errMsg });
             }
 
             // Apply bid update
