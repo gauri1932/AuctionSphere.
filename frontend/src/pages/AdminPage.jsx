@@ -333,12 +333,26 @@ const AdminPage = () => {
     setSoldPrice(val);
     const parsedVal = parseInt(val, 10) || 0;
 
+    // If there is an active leading bidder, check solvency before updating server
+    if (auctionState.highestBidder && auctionState.livePlayer) {
+      const leadingTeam = teams.find(t => t.name === auctionState.highestBidder);
+      if (leadingTeam) {
+        const solvency = getTeamSolvency(leadingTeam, parsedVal, auctionState.livePlayer.category);
+        if (!solvency.isAllowed) {
+          showNotification(solvency.rejectionMessage, 'error');
+          return;
+        }
+      }
+    }
+
     // Update live bid price in real-time via Socket
     socket.emit('updateCurrentBid', { bidAmount: parsedVal }, (res) => {
       if (res.success) {
         setAuctionState(res.data);
       } else if (res.error === 'Unauthorized') {
         setIsAdminRoomOwner(false);
+      } else if (res.error) {
+        showNotification(res.error, 'error');
       }
     });
   };
@@ -361,6 +375,14 @@ const AdminPage = () => {
 
     const winningTeam = teams.find(t => (t._id || t.id) === buyingTeamId);
     if (!winningTeam) return;
+
+    // Hard Gate on Hammer Sold
+    const activePlayerCat = auctionState.livePlayer.category;
+    const solvency = getTeamSolvency(winningTeam, price, activePlayerCat);
+    if (!solvency.isAllowed) {
+      showNotification(solvency.rejectionMessage, 'error');
+      return;
+    }
 
     setIsSubmitting(true);
     socket.timeout(5000).emit('markPlayerSold', { buyingTeamId, price }, (err, res) => {
@@ -866,8 +888,8 @@ const AdminPage = () => {
                         Initial Base Price: <strong className="text-white">{formatRupees(auctionState.livePlayer.basePrice)}</strong>
                       </p>
 
-                      {/* Sold forms */}
-                      <form onSubmit={markAsSold} className="grid grid-cols-1 gap-5 mt-6 pt-4 border-t border-white/10">
+                      {/* Bidding & Sold Controls */}
+                      <div className="grid grid-cols-1 gap-5 mt-6 pt-4 border-t border-white/10">
 
                         <div>
                           <label className="block text-xs uppercase tracking-wider font-bold text-gray-400 mb-2 text-left">
@@ -878,6 +900,12 @@ const AdminPage = () => {
                               type="number"
                               value={soldPrice}
                               onChange={(e) => handleBidPriceChange(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  e.target.blur();
+                                }
+                              }}
                               onFocus={() => setIsInputFocused(true)}
                               onBlur={() => setIsInputFocused(false)}
                               placeholder="Current Bid Price"
@@ -970,13 +998,29 @@ const AdminPage = () => {
                         </div>
 
                         <div className="flex gap-4 pt-2">
-                          <button
-                            type="submit"
-                            disabled={isSubmitting}
-                            className="flex-grow py-4 bg-green-600 hover:bg-green-700 disabled:bg-green-800/40 disabled:cursor-not-allowed disabled:scale-100 text-white font-bold font-sporty text-xl tracking-widest uppercase rounded-xl transition-all duration-300 hover:scale-[1.02] cursor-pointer"
-                          >
-                            {isSubmitting ? '⏳ Submitting...' : '🔨 Hammer Sold'}
-                          </button>
+                          {(() => {
+                            const selectedTeam = teams.find(t => (t._id || t.id) === buyingTeamId);
+                            const parsedPrice = parseInt(soldPrice, 10) || 0;
+                            const activePlayerCat = auctionState.livePlayer?.category;
+                            const solvency = selectedTeam ? getTeamSolvency(selectedTeam, parsedPrice, activePlayerCat) : { isAllowed: true };
+                            const isHammerBlocked = !buyingTeamId || !solvency.isAllowed || isSubmitting;
+
+                            return (
+                              <button
+                                type="button"
+                                disabled={isHammerBlocked}
+                                onClick={markAsSold}
+                                className={`flex-grow py-4 font-bold font-sporty text-xl tracking-widest uppercase rounded-xl transition-all duration-300 ${
+                                  isHammerBlocked
+                                    ? 'bg-green-800/30 text-gray-400 border border-white/5 cursor-not-allowed opacity-50'
+                                    : 'bg-green-600 hover:bg-green-700 text-white hover:scale-[1.02] cursor-pointer shadow-lg'
+                                }`}
+                                title={!buyingTeamId ? 'Select a team first' : !solvency.isAllowed ? solvency.rejectionMessage : 'Finalize Sale'}
+                              >
+                                {isSubmitting ? '⏳ Submitting...' : !solvency.isAllowed ? '⚠️ Solvency Blocked' : '🔨 Hammer Sold'}
+                              </button>
+                            );
+                          })()}
 
                           <button
                             type="button"
@@ -987,7 +1031,7 @@ const AdminPage = () => {
                             🚫 Pass Unsold
                           </button>
                         </div>
-                      </form>
+                      </div>
                     </div>
                   </div>
                 ) : (

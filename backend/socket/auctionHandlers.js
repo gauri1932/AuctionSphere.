@@ -370,11 +370,43 @@ module.exports = (io, socket) => {
         try {
             const { bidAmount } = data;
             const state = await AuctionState.findOne({ room: roomId });
-            if (state) {
-                state.currentBid = bidAmount;
-                await state.save();
-                io.to(roomId).emit('auctionStateUpdated', state);
+            if (!state || !state.livePlayer) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'No live player active.' });
+                return;
             }
+
+            // If a leading bidder is currently holding the lead, validate solvency for that team
+            if (state.highestBidder) {
+                const team = await Team.findOne({ name: state.highestBidder, room: roomId });
+                if (team) {
+                    const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+                    const teamSoldPlayers = await Player.find({ room: roomId, status: 'Sold', winningTeam: team.name });
+                    const currentOwned = {};
+                    for (const p of teamSoldPlayers) {
+                        if (p.category) {
+                            currentOwned[p.category] = (currentOwned[p.category] || 0) + 1;
+                        }
+                    }
+
+                    const solvency = validateBidSolvency({
+                        teamBudget: team.budget,
+                        categoryConfigs: rule,
+                        currentOwned,
+                        proposedBidCategory: state.livePlayer.category,
+                        proposedBidAmount: bidAmount
+                    });
+
+                    if (!solvency.isAllowed) {
+                        if (typeof callback === 'function') return callback({ success: false, error: solvency.rejectionMessage });
+                        return socket.emit('bidRejected', { message: solvency.rejectionMessage });
+                    }
+                }
+            }
+
+            state.currentBid = bidAmount;
+            await state.save();
+            io.to(roomId).emit('auctionStateUpdated', state);
+
             if (typeof callback === 'function') callback({ success: true, data: state });
         } catch (err) {
             console.error('Error updating current bid:', err);
@@ -414,23 +446,39 @@ module.exports = (io, socket) => {
             const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
 
             // Roster limit checks
-            const activeCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: winningTeam.name });
-            if (activeCount >= rule.maxPlayers) {
-                if (typeof callback === 'function') return callback({ success: false, error: `Roster Lockout: ${winningTeam.name} already reached the limit.` });
+            const teamSoldPlayers = await Player.find({ room: roomId, status: 'Sold', winningTeam: winningTeam.name });
+            if (teamSoldPlayers.length >= rule.maxPlayers) {
+                if (typeof callback === 'function') return callback({ success: false, error: `Roster Lockout: ${winningTeam.name} already reached the limit of ${rule.maxPlayers} players.` });
                 return;
             }
 
             const activePlayerCat = state.livePlayer.category;
-            const catCount = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: winningTeam.name, category: activePlayerCat });
+            const currentOwned = {};
+            for (const p of teamSoldPlayers) {
+                if (p.category) {
+                    currentOwned[p.category] = (currentOwned[p.category] || 0) + 1;
+                }
+            }
+
             const maxCatSlots = rule.slots?.[activePlayerCat] || 999;
+            const catCount = currentOwned[activePlayerCat] || 0;
             if (catCount >= maxCatSlots) {
-                if (typeof callback === 'function') return callback({ success: false, error: `Category Roster Full: ${winningTeam.name} category full.` });
+                if (typeof callback === 'function') return callback({ success: false, error: `Category Roster Full: ${winningTeam.name} already reached the limit for Category ${activePlayerCat}.` });
                 return;
             }
 
-            if (winningTeam.budget < price) {
-                if (typeof callback === 'function') return callback({ success: false, error: 'Insufficient budget!' });
-                return;
+            // Hard Solvency Gate before finalizing sale
+            const solvency = validateBidSolvency({
+                teamBudget: winningTeam.budget,
+                categoryConfigs: rule,
+                currentOwned,
+                proposedBidCategory: activePlayerCat,
+                proposedBidAmount: price
+            });
+
+            if (!solvency.isAllowed) {
+                if (typeof callback === 'function') return callback({ success: false, error: solvency.rejectionMessage });
+                return socket.emit('bidRejected', { message: solvency.rejectionMessage });
             }
 
             // Mark Player as Sold

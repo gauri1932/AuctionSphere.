@@ -168,6 +168,57 @@ const standardRules = {
   assert(result.mandatoryReserve === 4500000, 'Edge Case 7: Full reserve for standard categories (45L) is preserved');
 }
 
+// Edge Case 8: User's EXACT Room Configuration (A: 4, B: 2, C: 4 with basePrices 10L, 5L, 2L, budget 100L)
+const userRoomRules = {
+  slots: { A: 4, B: 2, C: 4 },
+  basePrices: { A: 1000000, B: 500000, C: 200000 }
+};
+
+// Team owns 0 players in all categories, bidding on Category A player:
+// Reserve = 3 A (30L) + 2 B (10L) + 4 C (8L) = 48L
+// Max allowed bid = 100L - 48L = 52L
+{
+  // Test 1: Bid of 60L on Cat A -> REJECTED
+  const res60L = validateBidSolvency({
+    teamBudget: 10000000,
+    categoryConfigs: userRoomRules,
+    currentOwned: { A: 0, B: 0, C: 0 },
+    proposedBidCategory: 'A',
+    proposedBidAmount: 6000000
+  });
+  assert(res60L.isAllowed === false, 'User Room: Bid of 60L on Cat A is REJECTED');
+  assert(res60L.mandatoryReserve === 4800000, 'User Room: Mandatory reserve is exactly 48L');
+  assert(res60L.maxBid === 5200000, 'User Room: Max bid is exactly 52L');
+  assert(
+    res60L.rejectionMessage === 'Solvency Lockout: Bidding ₹60,00,000 leaves ₹40,00,000, which is less than the ₹48,00,000 required to buy mandatory quota players.',
+    'User Room: Rejection message for 60L matches format'
+  );
+
+  // Test 2: Bid of 52L on Cat A -> ALLOWED (Exact boundary)
+  const res52L = validateBidSolvency({
+    teamBudget: 10000000,
+    categoryConfigs: userRoomRules,
+    currentOwned: { A: 0, B: 0, C: 0 },
+    proposedBidCategory: 'A',
+    proposedBidAmount: 5200000
+  });
+  assert(res52L.isAllowed === true, 'User Room: Bid of 52L on Cat A (exact boundary) is ALLOWED');
+
+  // Test 3: Bid of 52L + 1 (5200001) on Cat A -> REJECTED
+  const res52LPlus1 = validateBidSolvency({
+    teamBudget: 10000000,
+    categoryConfigs: userRoomRules,
+    currentOwned: { A: 0, B: 0, C: 0 },
+    proposedBidCategory: 'A',
+    proposedBidAmount: 5200001
+  });
+  assert(res52LPlus1.isAllowed === false, 'User Room: Bid of 5200001 on Cat A is REJECTED');
+  assert(
+    res52LPlus1.rejectionMessage === 'Solvency Lockout: Bidding ₹52,00,001 leaves ₹47,99,999, which is less than the ₹48,00,000 required to buy mandatory quota players.',
+    'User Room: Rejection message for 5200001 matches format'
+  );
+}
+
 console.log(`\n=====================================`);
 console.log(`TEST SUMMARY: ${passedTests} / ${totalTests} TESTS PASSED`);
 console.log(`=====================================\n`);
