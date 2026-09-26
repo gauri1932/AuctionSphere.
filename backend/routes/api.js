@@ -8,6 +8,8 @@ const Team = require('../models/Team');
 const Rule = require('../models/Rule');
 const AuctionState = require('../models/AuctionState');
 const Room = require('../models/Room');
+const { parseText, parseRuleSet } = require('../utils/validators');
+const { buildPlayerDoc, buildTeamDoc, hasDuplicateTeamNames, MAX_ROSTER_UPLOAD } = require('../utils/sanitizers');
 
 // Default sets to seed on system/room creation
 const DEFAULT_RULES = {
@@ -53,7 +55,10 @@ const requireRoomAdmin = async (req, res, next) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized: No active session' });
         }
-        const roomId = req.params.roomId || req.body.roomId || req.query.roomId;
+        // req.body is undefined in Express 5 when a request carries no body
+        // (for example a DELETE with only a query string).
+        const body = req.body || {};
+        const roomId = req.params.roomId || body.roomId || req.query.roomId;
         if (!roomId || !mongoose.Types.ObjectId.isValid(roomId)) {
             return res.status(400).json({ error: 'Bad Request: Missing or invalid room ID' });
         }
@@ -62,10 +67,8 @@ const requireRoomAdmin = async (req, res, next) => {
             return res.status(404).json({ error: 'Room not found' });
         }
 
-        // Auto-claim migration: If room is an old mock room, claim it for the current logged-in user!
-        if (room.adminUserId === 'ADMIN') {
-            room.adminUserId = userId;
-            await room.save();
+        if (!room.adminUserId || room.adminUserId === 'ADMIN') {
+            return res.status(403).json({ error: 'Forbidden: This room has no valid owner' });
         }
 
         if (room.adminUserId !== userId) {
@@ -74,7 +77,8 @@ const requireRoomAdmin = async (req, res, next) => {
         req.room = room;
         next();
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('requireRoomAdmin failed:', err);
+        res.status(500).json({ error: 'Could not verify room ownership' });
     }
 };
 
@@ -87,17 +91,22 @@ router.post('/rooms', async (req, res) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized: Sign in required to create rooms' });
         }
-        const { name, passkey } = req.body;
-        if (!name || !passkey) {
-            return res.status(400).json({ error: 'Room name and passkey are required' });
+        const body = req.body || {};
+        const nameCheck = parseText(body.name, { field: 'Room name', min: 3, max: 80 });
+        if (!nameCheck.ok) {
+            return res.status(400).json({ error: nameCheck.error });
+        }
+        const passkeyCheck = parseText(body.passkey, { field: 'Room passkey', min: 6, max: 64 });
+        if (!passkeyCheck.ok) {
+            return res.status(400).json({ error: passkeyCheck.error });
         }
 
         const adminName = sessionClaims?.username || sessionClaims?.email || 'Admin';
 
         // Create Room
         const room = new Room({
-            name,
-            passkey,
+            name: nameCheck.value,
+            passkey: passkeyCheck.value,
             adminUserId: userId,
             adminName
         });
@@ -115,107 +124,139 @@ router.post('/rooms', async (req, res) => {
 
         res.status(201).json(room);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Failed to create room:', err);
+        res.status(500).json({ error: 'Could not create the room' });
     }
 });
 
-// GET: Fetch list of rooms (excludes passkey)
+// GET: Fetch list of rooms (never exposes passkeys or owner identity)
 router.get('/rooms', async (req, res) => {
     try {
-        const rooms = await Room.find().select('-passkey').sort({ createdAt: -1 });
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
+        const filter = {};
+
+        // An authenticated caller only ever sees the rooms they own. Anonymous
+        // callers get a minimal directory so the passkey join flow still works.
+        const { userId } = getAuth(req);
+        if (userId) {
+            filter.adminUserId = userId;
+        }
+
+        const rooms = await Room.find(filter)
+            .select(userId ? '-passkey' : '-passkey -adminUserId -adminName')
+            .sort({ createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit);
+
         res.json(rooms);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Failed to list rooms:', err);
+        res.status(500).json({ error: 'Could not load rooms' });
     }
 });
 
 // GET: Fetch single room details (excludes passkey)
 router.get('/rooms/:roomId', async (req, res) => {
     try {
+        const { userId } = getAuth(req);
         const room = await Room.findById(req.params.roomId).select('-passkey');
         if (!room) return res.status(404).json({ error: 'Room not found' });
 
-        // Auto-claim migration: If room is an old mock room, claim it for the current logged-in user!
-        const { userId } = getAuth(req);
-        if (userId && room.adminUserId === 'ADMIN') {
-            room.adminUserId = userId;
-            await room.save();
+        // Owner identity is only useful to the owner. Exposing it to every
+        // signed-in caller would let anyone enumerate who owns which room.
+        const isOwner = !!userId
+            && !!room.adminUserId
+            && room.adminUserId !== 'ADMIN'
+            && room.adminUserId === userId;
+        if (!isOwner) {
+            room.set('adminUserId', undefined);
+            room.set('adminName', undefined);
         }
 
         res.json(room);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        if (err.name === 'CastError') {
+            return res.status(400).json({ error: 'Invalid room ID' });
+        }
+        console.error('Failed to load room:', err);
+        res.status(500).json({ error: 'Could not load the room' });
     }
 });
+
 
 // POST: Verify passkey or check room admin ownership
 router.post('/rooms/:roomId/verify-passkey', async (req, res) => {
     try {
-        const { passkey } = req.body;
+        const body = req.body || {};
+        const { passkey } = body;
+        const { userId } = getAuth(req);
         const room = await Room.findById(req.params.roomId);
         if (!room) {
             return res.status(404).json({ error: 'Room not found' });
         }
 
-        // Check if current logged-in user is the owner
-        const { userId } = getAuth(req);
-
-        // Auto-claim migration: If room is an old mock room, claim it for the current logged-in user!
-        if (userId && room.adminUserId === 'ADMIN') {
-            room.adminUserId = userId;
-            await room.save();
-        }
-
-        if (userId && room.adminUserId === userId) {
+        if (userId && room.adminUserId && room.adminUserId !== 'ADMIN' && room.adminUserId === userId) {
             return res.json({ success: true, isAdmin: true });
         }
 
-        if (room.passkey === passkey) {
-            return res.json({ success: true, isAdmin: false });
-        } else {
+        const passkeyCheck = parseText(passkey, { field: 'Room passkey', min: 1, max: 64 });
+        if (!passkeyCheck.ok || room.passkey !== passkeyCheck.value) {
             return res.status(401).json({ success: false, error: 'Incorrect passkey' });
         }
+
+        return res.json({ success: true, isAdmin: false });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        if (err.name === 'CastError') {
+            return res.status(400).json({ error: 'Invalid room ID' });
+        }
+        console.error('Failed to verify passkey:', err);
+        res.status(500).json({ error: 'Could not verify the passkey' });
     }
 });
 
 
 // --- PLAYERS API ---
 
+
 // GET: Fetch all players in a room
 router.get('/players', async (req, res) => {
     try {
         const { roomId } = req.query;
         if (!roomId) return res.status(400).json({ error: 'Missing roomId' });
+        if (!mongoose.Types.ObjectId.isValid(roomId)) return res.status(400).json({ error: 'Invalid roomId' });
         const players = await Player.find({ room: roomId });
         res.json(players);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Failed to load players:', err);
+        res.status(500).json({ error: 'Could not load players' });
     }
 });
 
 // POST: Add new player(s) to a room (Admin protected)
 router.post('/players', requireRoomAdmin, async (req, res) => {
     try {
-        const roomId = req.body.roomId || req.query.roomId;
-        const data = req.body.data || req.body;
+        const body = req.body || {};
+        const roomId = body.roomId || req.query.roomId;
+        const data = body.data || body;
         let result;
 
         if (Array.isArray(data)) {
+            if (data.length > MAX_ROSTER_UPLOAD) {
+                return res.status(413).json({ error: 'Too many players in one upload (max ' + MAX_ROSTER_UPLOAD + ')' });
+            }
+            const docs = data.map((p) => buildPlayerDoc(p, roomId)).filter(Boolean);
+            if (docs.length !== data.length) {
+                return res.status(400).json({ error: 'One or more players were missing a name or category' });
+            }
             await Player.deleteMany({ room: roomId });
-            result = await Player.insertMany(data.map(p => {
-                const { id, _id, ...rest } = p;
-                const idToUse = _id || id;
-                const doc = { ...rest, room: roomId };
-                if (idToUse && mongoose.Types.ObjectId.isValid(idToUse)) {
-                    doc._id = idToUse;
-                }
-                return doc;
-            }));
+            result = await Player.insertMany(docs);
         } else {
-            const { name, photo, category, basePrice, age, status, finalPrice, winningTeam } = data;
-            result = new Player({ name, photo, category, basePrice, age, status, finalPrice, winningTeam, room: roomId });
+            const doc = buildPlayerDoc(data, roomId);
+            if (!doc) {
+                return res.status(400).json({ error: 'Player name and category are required' });
+            }
+            result = new Player(doc);
             await result.save();
         }
 
@@ -229,7 +270,8 @@ router.post('/players', requireRoomAdmin, async (req, res) => {
 
         res.status(Array.isArray(data) ? 200 : 201).json(result);
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        console.error('Failed to save players:', err);
+        res.status(400).json({ error: err.name === 'ValidationError' ? 'Invalid player data' : 'Could not save players' });
     }
 });
 
@@ -246,12 +288,14 @@ router.delete('/players', requireRoomAdmin, async (req, res) => {
         }
         res.json({ message: 'All players deleted successfully' });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Request failed:', err);
+        res.status(500).json({ error: 'Unexpected server error' });
     }
 });
 
 
 // --- TEAMS API ---
+
 
 // Helper to calculate exact reconciled budget for all teams from sold players (source of truth)
 const getReconciledTeams = async (roomId) => {
@@ -284,41 +328,53 @@ router.get('/teams', async (req, res) => {
         const teams = await getReconciledTeams(roomId);
         res.json(teams);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Request failed:', err);
+        res.status(500).json({ error: 'Unexpected server error' });
     }
 });
 
 // POST: Add new team(s) to a room (Admin protected)
 router.post('/teams', requireRoomAdmin, async (req, res) => {
     try {
-        const roomId = req.body.roomId || req.query.roomId;
-        const data = req.body.data || req.body;
+        const body = req.body || {};
+        const roomId = body.roomId || req.query.roomId;
+        const data = body.data || body;
         let result;
 
         if (Array.isArray(data)) {
+            if (data.length > 200) {
+                return res.status(413).json({ error: 'Too many teams in one upload (max 200)' });
+            }
+            const docs = data.map((t) => buildTeamDoc(t, roomId)).filter(Boolean);
+            if (docs.length !== data.length) {
+                return res.status(400).json({ error: 'One or more teams were missing a name or a valid budget' });
+            }
+            if (hasDuplicateTeamNames(docs)) {
+                return res.status(400).json({ error: 'Team names must be unique within a room' });
+            }
             await Team.deleteMany({ room: roomId });
-            result = await Team.insertMany(data.map(t => {
-                const { id, _id, ...rest } = t;
-                const idToUse = _id || id;
-                const doc = { ...rest, room: roomId };
-                if (idToUse && mongoose.Types.ObjectId.isValid(idToUse)) {
-                    doc._id = idToUse;
-                }
-                return doc;
-            }));
+            result = await Team.insertMany(docs);
         } else {
-            const { name, budget, initialBudget } = data;
-            result = new Team({ name, budget, initialBudget, room: roomId });
+            const doc = buildTeamDoc(data, roomId);
+            if (!doc) {
+                return res.status(400).json({ error: 'Team name and a valid budget are required' });
+            }
+            const clash = await Team.exists({ room: roomId, name: doc.name });
+            if (clash) {
+                return res.status(409).json({ error: 'A team with that name already exists in this room' });
+            }
+            result = new Team(doc);
             await result.save();
         }
 
-        const allTeams = await Team.find({ room: roomId });
+        const allTeams = await getReconciledTeams(roomId);
         const io = req.app.get('io');
         if (io) io.to(roomId).emit('teamsUpdated', allTeams);
 
         res.status(Array.isArray(data) ? 200 : 201).json(result);
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        console.error('Failed to save teams:', err);
+        res.status(400).json({ error: err.name === 'ValidationError' ? 'Invalid team data' : 'Could not save teams' });
     }
 });
 
@@ -335,18 +391,29 @@ router.delete('/teams/:id', async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized: No active session' });
         }
         const room = await Room.findById(team.room);
-        if (!room || room.adminUserId !== userId) {
+        if (!room || !room.adminUserId || room.adminUserId === 'ADMIN' || room.adminUserId !== userId) {
             return res.status(403).json({ error: 'Forbidden: Unauthorized' });
         }
 
+        // Refuse to orphan players already sold to this team, which would
+        // silently drop their spend out of every total and summary.
+        const owned = await Player.countDocuments({ room: team.room, status: 'Sold', winningTeam: team.name });
+        if (owned > 0) {
+            return res.status(409).json({
+                error: `${team.name} owns ${owned} sold player${owned === 1 ? '' : 's'}. Undo those sales before deleting the team.`,
+            });
+        }
+
         await Team.findByIdAndDelete(req.params.id);
-        const allTeams = await Team.find({ room: team.room });
+        const allTeams = await getReconciledTeams(team.room);
+
         const io = req.app.get('io');
         if (io) io.to(team.room.toString()).emit('teamsUpdated', allTeams);
 
         res.json({ message: 'Team deleted successfully' });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Request failed:', err);
+        res.status(500).json({ error: 'Unexpected server error' });
     }
 });
 
@@ -359,7 +426,8 @@ router.delete('/teams', requireRoomAdmin, async (req, res) => {
         if (io) io.to(roomId).emit('teamsUpdated', []);
         res.json({ message: 'All teams deleted successfully' });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Request failed:', err);
+        res.status(500).json({ error: 'Unexpected server error' });
     }
 });
 
@@ -371,6 +439,7 @@ router.get('/rules', async (req, res) => {
     try {
         const { roomId } = req.query;
         if (!roomId) return res.status(400).json({ error: 'Missing roomId' });
+        if (!mongoose.Types.ObjectId.isValid(roomId)) return res.status(400).json({ error: 'Invalid roomId' });
         let rule = await Rule.findOne({ room: roomId });
         if (!rule) {
             rule = new Rule({ room: roomId, ...DEFAULT_RULES });
@@ -378,23 +447,39 @@ router.get('/rules', async (req, res) => {
         }
         res.json(rule);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Failed to load rules:', err);
+        res.status(500).json({ error: 'Could not load rules' });
     }
 });
+
 
 // POST: Save/Update category rules for a room (Admin protected)
 router.post('/rules', requireRoomAdmin, async (req, res) => {
     try {
-        const roomId = req.body.roomId || req.query.roomId;
-        const { basePrices, slots, minPlayers, maxPlayers } = req.body;
+        const body = req.body || {};
+        const roomId = body.roomId || req.query.roomId;
         let rule = await Rule.findOne({ room: roomId });
+
+        // Start from the stored values so a partial update cannot blank a field.
+        const merged = {
+            basePrices: { ...(rule ? rule.basePrices.toObject() : DEFAULT_RULES.basePrices), ...(body.basePrices || {}) },
+            slots: { ...(rule ? rule.slots.toObject() : DEFAULT_RULES.slots), ...(body.slots || {}) },
+            minPlayers: body.minPlayers !== undefined ? body.minPlayers : (rule ? rule.minPlayers : DEFAULT_RULES.minPlayers),
+            maxPlayers: body.maxPlayers !== undefined ? body.maxPlayers : (rule ? rule.maxPlayers : DEFAULT_RULES.maxPlayers),
+        };
+
+        const check = parseRuleSet(merged);
+        if (!check.ok) {
+            return res.status(400).json({ error: check.error, errors: check.errors });
+        }
+
         if (!rule) {
-            rule = new Rule({ room: roomId, basePrices, slots, minPlayers, maxPlayers });
+            rule = new Rule({ room: roomId, ...check.value });
         } else {
-            rule.basePrices = basePrices;
-            rule.slots = slots;
-            if (minPlayers !== undefined) rule.minPlayers = minPlayers;
-            if (maxPlayers !== undefined) rule.maxPlayers = maxPlayers;
+            rule.basePrices = check.value.basePrices;
+            rule.slots = check.value.slots;
+            rule.minPlayers = check.value.minPlayers;
+            rule.maxPlayers = check.value.maxPlayers;
         }
         await rule.save();
 
@@ -403,7 +488,8 @@ router.post('/rules', requireRoomAdmin, async (req, res) => {
 
         res.json(rule);
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        console.error('Failed to save rules:', err);
+        res.status(400).json({ error: 'Could not save the rules' });
     }
 });
 
@@ -422,28 +508,36 @@ router.get('/state', async (req, res) => {
         }
         res.json(state);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Request failed:', err);
+        res.status(500).json({ error: 'Unexpected server error' });
     }
 });
 
 // POST: Save/Update live auction state for a room (Admin protected)
+// Only the coarse phase flag is writable over REST. Bid amounts, the leading
+// bidder and bid history are owned exclusively by the socket handlers, so this
+// endpoint cannot be used to sidestep the solvency and atomicity guarantees.
 router.post('/state', requireRoomAdmin, async (req, res) => {
     try {
-        const roomId = req.body.roomId || req.query.roomId;
-        let state = await AuctionState.findOne({ room: roomId });
-        if (!state) {
-            state = new AuctionState({ room: roomId, ...req.body });
-        } else {
-            Object.assign(state, req.body);
+        const body = req.body || {};
+        const roomId = body.roomId || req.query.roomId;
+        const allowed = ['waiting', 'live', 'sold', 'unsold'];
+        if (!allowed.includes(body.liveStatus)) {
+            return res.status(400).json({ error: `liveStatus must be one of: ${allowed.join(', ')}` });
         }
-        await state.save();
+        const state = await AuctionState.findOneAndUpdate(
+            { room: roomId },
+            { $set: { liveStatus: body.liveStatus } },
+            { new: true, upsert: true, setDefaultsOnInsert: true }
+        );
 
         const io = req.app.get('io');
         if (io) io.to(roomId).emit('auctionStateUpdated', state);
 
         res.json(state);
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        console.error('Failed to update state:', err);
+        res.status(400).json({ error: 'Could not update the auction state' });
     }
 });
 
@@ -487,7 +581,8 @@ router.post('/rooms/:roomId/reset', requireRoomAdmin, async (req, res) => {
             state: seededState
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Request failed:', err);
+        res.status(500).json({ error: 'Unexpected server error' });
     }
 });
 

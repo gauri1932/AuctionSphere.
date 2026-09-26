@@ -5,6 +5,8 @@ const Rule = require('../models/Rule');
 const AuctionState = require('../models/AuctionState');
 const Room = require('../models/Room');
 const { validateBidSolvency } = require('../utils/solvencyEngine');
+const { parseMoney, parseRuleSet } = require('../utils/validators');
+const { buildPlayerDoc, buildTeamDoc } = require('../utils/sanitizers');
 
 const DEFAULT_RULES = {
     basePrices: { A: 1000000, B: 500000, C: 200000 },
@@ -149,7 +151,7 @@ module.exports = (io, socket) => {
             }
         } catch (err) {
             console.error('Error joining socket room:', err);
-            if (typeof callback === 'function') callback({ success: false, error: err.message });
+            if (typeof callback === 'function') callback({ success: false, error: 'Something went wrong. Please try again.' });
         }
     });
 
@@ -177,7 +179,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error fetching initial data:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });
@@ -193,56 +195,109 @@ module.exports = (io, socket) => {
         }
 
         try {
-            const { playerId } = data;
-            const player = await Player.findOne({ _id: playerId, room: roomId });
+            const { playerId } = data || {};
+            const player = await Player.findOne({
+                _id: (playerId && mongoose.Types.ObjectId.isValid(playerId)) ? playerId : null,
+                room: roomId,
+            });
             if (!player) {
                 if (typeof callback === 'function') return callback({ success: false, error: 'Player not found in this room.' });
                 return;
             }
 
-            // Reset other live players in this room
-            await Player.updateMany({ room: roomId, status: 'Live' }, { status: 'Pending' });
-
-            // Set current player live
-            player.status = 'Live';
-            await player.save();
-
-            // Resolve base price
-            const rules = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
-            const configBasePrice = (rules.basePrices && rules.basePrices[player.category] !== undefined)
-                ? rules.basePrices[player.category]
-                : player.basePrice;
-
-            const newState = {
-                livePlayer: player,
-                liveStatus: 'live',
-                soldInfo: null,
-                currentBid: configBasePrice,
-                highestBidder: null,
-                bidHistory: []
-            };
-
-            let state = await AuctionState.findOne({ room: roomId });
-            if (!state) {
-                state = new AuctionState({ room: roomId, ...newState });
-            } else {
-                Object.assign(state, newState);
+            if (player.status === 'Sold') {
+                if (typeof callback === 'function') return callback({ success: false, error: 'This player has already been sold. Use "Undo Sale" to reverse it first.' });
+                return;
             }
-            await state.save();
+
+            const state0 = await AuctionState.findOne({ room: roomId });
+            if (state0 && state0.livePlayer && String(state0.livePlayer._id) !== String(player._id)
+                && state0.liveStatus === 'live') {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Another player is already on the live stage. Clear the stage first.' });
+                return;
+            }
+
+            // Claim the stage atomically so two concurrent pushes cannot both
+            // leave their player marked Live.
+            const livePlayerRef = { _id: player._id, name: player.name, category: player.category, basePrice: player.basePrice, photo: player.photo, age: player.age, status: 'Live' };
+
+            let state = await AuctionState.findOneAndUpdate(
+                {
+                    room: roomId,
+                    liveStatus: { $ne: 'live' },
+                    $or: [
+                        { livePlayer: null },
+                        { 'livePlayer._id': { $ne: player._id } },
+                    ],
+                },
+                {
+                    $set: {
+                        livePlayer: livePlayerRef,
+                        liveStatus: 'live',
+                        soldInfo: null,
+                        highestBidder: null,
+                        bidHistory: [],
+                    },
+                },
+                { new: true }
+            );
+
+            if (!state) {
+                state = await AuctionState.findOne({ room: roomId });
+                const samePlayer = state && state.livePlayer && String(state.livePlayer._id) === String(player._id);
+                if (state && state.liveStatus === 'live' && samePlayer) {
+                    // Idempotent re-push of the player already on stage.
+                    const rulesNow = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+                    const baseNow = (rulesNow.basePrices && rulesNow.basePrices[player.category] !== undefined)
+                        ? rulesNow.basePrices[player.category]
+                        : player.basePrice;
+                    state.currentBid = Number(baseNow) || 0;
+                    state.highestBidder = null;
+                    state.bidHistory = [];
+                    state.soldInfo = null;
+                    state.liveStatus = 'live';
+                    await state.save();
+                } else {
+                    if (typeof callback === 'function') return callback({ success: false, error: 'The live stage is busy. Clear it before pushing another player.' });
+                    return;
+                }
+            } else {
+                const rules0 = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+                const base0 = (rules0.basePrices && rules0.basePrices[player.category] !== undefined)
+                    ? rules0.basePrices[player.category]
+                    : player.basePrice;
+                state = await AuctionState.findOneAndUpdate(
+                    { _id: state._id },
+                    { $set: { currentBid: Number(base0) || 0 } },
+                    { new: true }
+                );
+            }
+
+            // Reset other live players, then flip this one. Ordered after the
+            // state claim so a concurrent push cannot resurrect a second Live row.
+            await Player.updateMany(
+                { room: roomId, status: 'Live', _id: { $ne: player._id } },
+                { $set: { status: 'Pending' } }
+            );
+            await Player.updateOne(
+                { _id: player._id, room: roomId },
+                { $set: { status: 'Live' } }
+            );
 
             const freshPlayers = await Player.find({ room: roomId });
+            const finalState = await AuctionState.findOne({ room: roomId });
 
             // Broadcast updates to room
             io.to(roomId).emit('playersUpdated', freshPlayers);
-            io.to(roomId).emit('auctionStateUpdated', state);
+            io.to(roomId).emit('auctionStateUpdated', finalState);
 
             if (typeof callback === 'function') {
-                callback({ success: true, data: { players: freshPlayers, state } });
+                callback({ success: true, data: { players: freshPlayers, state: finalState } });
             }
         } catch (err) {
             console.error('Error pushing player live:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Could not push the player live. Please try again.' });
             }
         }
     });
@@ -258,7 +313,16 @@ module.exports = (io, socket) => {
         }
 
         try {
-            const { teamId, teamName, bidAmount } = data;
+            const { teamId, teamName, bidAmount } = data || {};
+
+            // Amounts are untrusted: reject negatives, fractions, NaN and unsafe
+            // integers before they can reach the ledger.
+            const amount = parseMoney(bidAmount, { allowZero: false, field: 'Bid amount' });
+            if (!amount.ok) {
+                if (typeof callback === 'function') return callback({ success: false, error: amount.error });
+                return socket.emit('bidRejected', { message: amount.error });
+            }
+            const bid = amount.value;
 
             // 1. Fetch State, Team, and Rules concurrently
             const teamQuery = (teamId && mongoose.Types.ObjectId.isValid(teamId))
@@ -277,9 +341,11 @@ module.exports = (io, socket) => {
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
-            // Ensure bid is higher
-            if (bidAmount <= state.currentBid && state.highestBidder !== null) {
-                const errMsg = 'Bid must be higher than current highest bid.';
+            // A bid must always beat the standing bid. On the opening bid the
+            // standing bid is the category base price, so this also enforces the
+            // reserve floor that used to be bypassed via highestBidder === null.
+            if (bid <= state.currentBid) {
+                const errMsg = `Bid must be higher than the current bid of ${state.currentBid}.`;
                 if (typeof callback === 'function') return callback({ success: false, error: errMsg });
                 return socket.emit('bidRejected', { message: errMsg });
             }
@@ -326,7 +392,7 @@ module.exports = (io, socket) => {
                 categoryConfigs: activeRule,
                 currentOwned,
                 proposedBidCategory: activePlayerCat,
-                proposedBidAmount: bidAmount
+                proposedBidAmount: bid
             });
 
             if (!solvency.isAllowed) {
@@ -335,23 +401,44 @@ module.exports = (io, socket) => {
                 return socket.emit('bidRejected', { message: errMsg });
             }
 
-            // Apply bid update
-            state.currentBid = bidAmount;
-            state.highestBidder = team.name;
-            state.bidHistory.push({ teamId: team._id, teamName: team.name, bidAmount, time: new Date() });
-            await state.save();
+
+            // Apply the bid atomically. The currentBid guard means a concurrent
+            // bid that already moved the price wins, and this one is rejected
+            // instead of silently overwriting a higher bid.
+            const updated = await AuctionState.findOneAndUpdate(
+                {
+                    _id: state._id,
+                    room: roomId,
+                    liveStatus: 'live',
+                    'livePlayer._id': state.livePlayer._id,
+                    currentBid: { $lt: bid },
+                },
+                {
+                    $set: { currentBid: bid, highestBidder: team.name },
+                    $push: {
+                        bidHistory: { teamId: team._id, teamName: team.name, bidAmount: bid, time: new Date() },
+                    },
+                },
+                { new: true }
+            );
+
+            if (!updated) {
+                const errMsg = 'A higher bid was placed moments ago. This bid was not accepted.';
+                if (typeof callback === 'function') return callback({ success: false, error: errMsg });
+                return socket.emit('bidRejected', { message: errMsg });
+            }
 
             // Broadcast updates to room
-            io.to(roomId).emit('bidAccepted', state);
-            io.to(roomId).emit('auctionStateUpdated', state);
+            io.to(roomId).emit('bidAccepted', updated);
+            io.to(roomId).emit('auctionStateUpdated', updated);
 
             if (typeof callback === 'function') {
-                callback({ success: true, data: state });
+                callback({ success: true, data: updated });
             }
         } catch (error) {
             console.error('Error processing socket bid:', error);
             if (typeof callback === 'function') {
-                callback({ success: false, error: error.message });
+                callback({ success: false, error: 'Could not process the bid. Please try again.' });
             } else {
                 socket.emit('bidRejected', { message: 'Internal server error processing bid.' });
             }
@@ -368,18 +455,35 @@ module.exports = (io, socket) => {
             return;
         }
         try {
-            const { bidAmount } = data;
+            const amount = parseMoney(data && data.bidAmount, { allowZero: false, field: 'Bid amount' });
+            if (!amount.ok) {
+                if (typeof callback === 'function') return callback({ success: false, error: amount.error });
+                return socket.emit('bidRejected', { message: amount.error });
+            }
+            const bidAmount = amount.value;
+
             const state = await AuctionState.findOne({ room: roomId });
             if (!state || !state.livePlayer) {
                 if (typeof callback === 'function') return callback({ success: false, error: 'No live player active.' });
                 return;
             }
 
+            const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+            const reserve = (rule.basePrices && rule.basePrices[state.livePlayer.category] !== undefined)
+                ? rule.basePrices[state.livePlayer.category]
+                : state.livePlayer.basePrice;
+            const floor = Number.isFinite(Number(reserve)) ? Number(reserve) : 0;
+
+            if (bidAmount < floor) {
+                const errMsg = `Bid cannot be lower than the base price of ${floor}.`;
+                if (typeof callback === 'function') return callback({ success: false, error: errMsg });
+                return socket.emit('bidRejected', { message: errMsg });
+            }
+
             // If a leading bidder is currently holding the lead, validate solvency for that team
             if (state.highestBidder) {
                 const team = await Team.findOne({ name: state.highestBidder, room: roomId });
                 if (team) {
-                    const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
                     const teamSoldPlayers = await Player.find({ room: roomId, status: 'Sold', winningTeam: team.name });
                     const currentOwned = {};
                     for (const p of teamSoldPlayers) {
@@ -403,14 +507,23 @@ module.exports = (io, socket) => {
                 }
             }
 
-            state.currentBid = bidAmount;
-            await state.save();
-            io.to(roomId).emit('auctionStateUpdated', state);
+            const updated = await AuctionState.findOneAndUpdate(
+                { _id: state._id, room: roomId, liveStatus: 'live' },
+                { $set: { currentBid: bidAmount } },
+                { new: true }
+            );
 
-            if (typeof callback === 'function') callback({ success: true, data: state });
+            if (!updated) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Auction state changed. Refresh and try again.' });
+                return;
+            }
+
+            io.to(roomId).emit('auctionStateUpdated', updated);
+
+            if (typeof callback === 'function') callback({ success: true, data: updated });
         } catch (err) {
             console.error('Error updating current bid:', err);
-            if (typeof callback === 'function') callback({ success: false, error: err.message });
+            if (typeof callback === 'function') callback({ success: false, error: 'Could not update the bid. Please try again.' });
         }
     });
 
@@ -425,25 +538,51 @@ module.exports = (io, socket) => {
         }
 
         try {
-            const { buyingTeamId, price } = data;
+            // The winning bid is owned by the server. A client may suggest which
+            // team it thinks won, but the price and the buyer are always derived
+            // from AuctionState so a tampered payload cannot redirect a sale.
+            const suggestedTeamId = data && data.buyingTeamId;
             const state = await AuctionState.findOne({ room: roomId });
             if (!state || !state.livePlayer) {
                 if (typeof callback === 'function') return callback({ success: false, error: 'No live player active.' });
                 return;
             }
 
-            if (state.liveStatus === 'sold') {
-                if (typeof callback === 'function') return callback({ success: false, error: 'Player is already sold.' });
+            if (state.liveStatus !== 'live') {
+                const errMsg = state.liveStatus === 'sold'
+                    ? 'Player is already sold.'
+                    : `This player is already marked ${state.liveStatus}.`;
+                if (typeof callback === 'function') return callback({ success: false, error: errMsg });
                 return;
             }
 
-            const winningTeam = await Team.findOne({ _id: buyingTeamId, room: roomId });
+            if (!state.highestBidder) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'No bids have been placed. Push a player and place a bid before selling.' });
+                return;
+            }
+
+            const salePrice = Number(state.currentBid) || 0;
+            if (salePrice <= 0) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Standing bid is not a valid amount.' });
+                return;
+            }
+
+            const winningTeam = await Team.findOne({ name: state.highestBidder, room: roomId });
             if (!winningTeam) {
-                if (typeof callback === 'function') return callback({ success: false, error: 'Winning franchise not found in this room.' });
+                if (typeof callback === 'function') return callback({ success: false, error: 'Leading team no longer exists in this room.' });
+                return;
+            }
+
+            if (suggestedTeamId && mongoose.Types.ObjectId.isValid(suggestedTeamId)
+                && String(suggestedTeamId) !== String(winningTeam._id)) {
+                if (typeof callback === 'function') {
+                    return callback({ success: false, error: `Leading bid belongs to ${winningTeam.name}. Refresh and try again.` });
+                }
                 return;
             }
 
             const rule = await Rule.findOne({ room: roomId }) || DEFAULT_RULES;
+
 
             // Roster limit checks
             const teamSoldPlayers = await Player.find({ room: roomId, status: 'Sold', winningTeam: winningTeam.name });
@@ -473,7 +612,7 @@ module.exports = (io, socket) => {
                 categoryConfigs: rule,
                 currentOwned,
                 proposedBidCategory: activePlayerCat,
-                proposedBidAmount: price
+                proposedBidAmount: salePrice
             });
 
             if (!solvency.isAllowed) {
@@ -481,45 +620,70 @@ module.exports = (io, socket) => {
                 return socket.emit('bidRejected', { message: solvency.rejectionMessage });
             }
 
-            // Mark Player as Sold
-            const player = await Player.findOne({ _id: state.livePlayer._id, room: roomId });
-            if (player) {
-                player.status = 'Sold';
-                player.finalPrice = price;
-                player.winningTeam = winningTeam.name;
-                await player.save();
+            // Atomically claim the sale. Only one concurrent hammer can flip
+            // liveStatus from 'live' to 'sold', so a double click cannot sell the
+            // same player to two teams.
+            const soldState = await AuctionState.findOneAndUpdate(
+                {
+                    _id: state._id,
+                    room: roomId,
+                    liveStatus: 'live',
+                    currentBid: salePrice,
+                    highestBidder: winningTeam.name,
+                },
+                {
+                    $set: {
+                        liveStatus: 'sold',
+                        soldInfo: {
+                            teamId: winningTeam._id,
+                            teamName: winningTeam.name,
+                            price: salePrice,
+                        },
+                    },
+                },
+                { new: true }
+            );
+
+            if (!soldState) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Auction state changed. Refresh before selling.' });
+                return;
+            }
+
+            // Mark Player as Sold. The status guard makes this a no-op if the
+            // player was retired between the claim and now.
+            const player = await Player.findOneAndUpdate(
+                { _id: state.livePlayer._id, room: roomId, status: { $in: ['Pending', 'Live', 'Unsold'] } },
+                { $set: { status: 'Sold', finalPrice: salePrice, winningTeam: winningTeam.name } },
+                { new: true }
+            );
+
+            if (!player) {
+                // Roll the claim back so the stage is not left showing a phantom sale.
+                await AuctionState.updateOne(
+                    { _id: state._id, liveStatus: 'sold' },
+                    { $set: { liveStatus: 'live', soldInfo: null } }
+                );
+                if (typeof callback === 'function') return callback({ success: false, error: 'This player is no longer available for sale.' });
+                return;
             }
 
             // Reconcile teams budget mathematically from all sold players
             const freshTeams = await getReconciledTeams(roomId);
-
-            // Set state to SOLD screen
-            const newState = {
-                livePlayer: state.livePlayer,
-                liveStatus: 'sold',
-                soldInfo: {
-                    teamId: winningTeam._id,
-                    teamName: winningTeam.name,
-                    price: price
-                }
-            };
-            Object.assign(state, newState);
-            await state.save();
-
             const freshPlayers = await Player.find({ room: roomId });
+            const finalState = await AuctionState.findOne({ room: roomId });
 
             // Broadcast updates to room
             io.to(roomId).emit('playersUpdated', freshPlayers);
             io.to(roomId).emit('teamsUpdated', freshTeams);
-            io.to(roomId).emit('auctionStateUpdated', state);
+            io.to(roomId).emit('auctionStateUpdated', finalState);
 
             if (typeof callback === 'function') {
-                callback({ success: true, data: { players: freshPlayers, teams: freshTeams, state } });
+                callback({ success: true, data: { players: freshPlayers, teams: freshTeams, state: finalState } });
             }
         } catch (err) {
             console.error('Error in markPlayerSold:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Could not complete the sale. Please try again.' });
             }
         }
     });
@@ -570,7 +734,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error in markPlayerUnsold:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });
@@ -601,7 +765,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error in clearLiveStage:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });
@@ -653,7 +817,7 @@ module.exports = (io, socket) => {
             }
         } catch (err) {
             console.error('Error in undoLastBid:', err);
-            if (typeof callback === 'function') callback({ success: false, error: err.message });
+            if (typeof callback === 'function') callback({ success: false, error: 'Something went wrong. Please try again.' });
         }
     });
 
@@ -735,7 +899,7 @@ module.exports = (io, socket) => {
             }
         } catch (err) {
             console.error('Error in undoPlayerSale:', err);
-            if (typeof callback === 'function') callback({ success: false, error: err.message });
+            if (typeof callback === 'function') callback({ success: false, error: 'Something went wrong. Please try again.' });
         }
     });
 
@@ -750,7 +914,12 @@ module.exports = (io, socket) => {
         }
 
         try {
-            const newPlayer = new Player({ ...playerData, room: roomId });
+            const doc = buildPlayerDoc(playerData, roomId);
+            if (!doc) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Player needs a name and a valid category (A, B or C).' });
+                return;
+            }
+            const newPlayer = new Player(doc);
             await newPlayer.save();
 
             const freshPlayers = await Player.find({ room: roomId });
@@ -762,7 +931,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error in addPlayer:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });
@@ -778,10 +947,20 @@ module.exports = (io, socket) => {
         }
 
         try {
-            const newTeam = new Team({ ...teamData, room: roomId });
+            const doc = buildTeamDoc(teamData, roomId);
+            if (!doc) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Team needs a name and a valid budget.' });
+                return;
+            }
+            const clash = await Team.exists({ room: roomId, name: doc.name });
+            if (clash) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'A team with that name already exists in this room.' });
+                return;
+            }
+            const newTeam = new Team(doc);
             await newTeam.save();
 
-            const freshTeams = await Team.find({ room: roomId });
+            const freshTeams = await getReconciledTeams(roomId);
             io.to(roomId).emit('teamsUpdated', freshTeams);
 
             if (typeof callback === 'function') {
@@ -790,7 +969,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error in addTeam:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });
@@ -806,10 +985,26 @@ module.exports = (io, socket) => {
         }
 
         try {
-            const { teamId } = data;
+            const { teamId } = data || {};
+            const team = await Team.findOne({ _id: teamId, room: roomId });
+            if (!team) {
+                if (typeof callback === 'function') return callback({ success: false, error: 'Team not found in this room.' });
+                return;
+            }
+
+            // Refuse to orphan players that are already sold to this team, which
+            // would silently drop their spend out of every total and summary.
+            const owned = await Player.countDocuments({ room: roomId, status: 'Sold', winningTeam: team.name });
+            if (owned > 0) {
+                if (typeof callback === 'function') {
+                    return callback({ success: false, error: `${team.name} owns ${owned} sold player${owned === 1 ? '' : 's'}. Undo those sales before deleting the team.` });
+                }
+                return;
+            }
+
             await Team.findOneAndDelete({ _id: teamId, room: roomId });
 
-            const freshTeams = await Team.find({ room: roomId });
+            const freshTeams = await getReconciledTeams(roomId);
             io.to(roomId).emit('teamsUpdated', freshTeams);
 
             if (typeof callback === 'function') {
@@ -818,7 +1013,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error in deleteTeam:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });
@@ -834,15 +1029,29 @@ module.exports = (io, socket) => {
         }
 
         try {
-            const { basePrices, slots, minPlayers, maxPlayers } = rulesData;
+            const payload = rulesData || {};
             let rule = await Rule.findOne({ room: roomId });
+
+            const merged = {
+                basePrices: { ...(rule ? rule.basePrices.toObject() : DEFAULT_RULES.basePrices), ...(payload.basePrices || {}) },
+                slots: { ...(rule ? rule.slots.toObject() : DEFAULT_RULES.slots), ...(payload.slots || {}) },
+                minPlayers: payload.minPlayers !== undefined ? payload.minPlayers : (rule ? rule.minPlayers : DEFAULT_RULES.minPlayers),
+                maxPlayers: payload.maxPlayers !== undefined ? payload.maxPlayers : (rule ? rule.maxPlayers : DEFAULT_RULES.maxPlayers),
+            };
+
+            const check = parseRuleSet(merged);
+            if (!check.ok) {
+                if (typeof callback === 'function') return callback({ success: false, error: check.error, errors: check.errors });
+                return;
+            }
+
             if (!rule) {
-                rule = new Rule({ room: roomId, basePrices, slots, minPlayers, maxPlayers });
+                rule = new Rule({ room: roomId, ...check.value });
             } else {
-                rule.basePrices = basePrices;
-                rule.slots = slots;
-                if (minPlayers !== undefined) rule.minPlayers = minPlayers;
-                if (maxPlayers !== undefined) rule.maxPlayers = maxPlayers;
+                rule.basePrices = check.value.basePrices;
+                rule.slots = check.value.slots;
+                rule.minPlayers = check.value.minPlayers;
+                rule.maxPlayers = check.value.maxPlayers;
             }
             await rule.save();
 
@@ -854,7 +1063,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error in updateRules:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });
@@ -942,7 +1151,7 @@ module.exports = (io, socket) => {
         } catch (err) {
             console.error('Error in systemReset:', err);
             if (typeof callback === 'function') {
-                callback({ success: false, error: err.message });
+                callback({ success: false, error: 'Something went wrong. Please try again.' });
             }
         }
     });

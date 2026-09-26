@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser, useAuth } from '@clerk/clerk-react';
 import './LobbyPage.css';
 import { API_URL } from '../utils/apiConfig';
+import { validatePasskey, validateRoomName, MIN_PASSKEY, MAX_PASSKEY, MIN_ROOM_NAME, MAX_ROOM_NAME } from '../utils/inputRules';
 
 const LobbyPage = () => {
   const [rooms, setRooms] = useState([]);
@@ -50,11 +51,19 @@ const LobbyPage = () => {
   // Handle Room Creation
   const handleCreateRoom = async (e) => {
     e.preventDefault();
-    if (!roomName.trim() || !passkey.trim()) {
-      setCreateError('Please fill in all fields.');
+    setCreateError('');
+
+    const nameCheck = validateRoomName(roomName);
+    if (!nameCheck.ok) {
+      setCreateError(nameCheck.error);
       return;
     }
-    
+    const passkeyCheck = validatePasskey(passkey);
+    if (!passkeyCheck.ok) {
+      setCreateError(passkeyCheck.error);
+      return;
+    }
+
     try {
       setCreating(true);
       setCreateError('');
@@ -66,7 +75,7 @@ const LobbyPage = () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ name: roomName, passkey })
+        body: JSON.stringify({ name: nameCheck.value, passkey: passkeyCheck.value })
       });
 
       if (!res.ok) {
@@ -108,7 +117,10 @@ const LobbyPage = () => {
   // Verify Passkey
   const handleVerifyPasskey = async (e) => {
     e.preventDefault();
-    if (!enteredPasskey.trim()) return;
+    if (!enteredPasskey.trim()) {
+      setVerificationError('Please enter the room passkey.');
+      return;
+    }
 
     try {
       setVerifying(true);
@@ -124,7 +136,7 @@ const LobbyPage = () => {
       const res = await fetch(`${API_URL}/rooms/${selectedRoom._id}/verify-passkey`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ passkey: enteredPasskey })
+        body: JSON.stringify({ passkey: enteredPasskey.trim() })
       });
 
       const data = await res.json();
@@ -133,15 +145,18 @@ const LobbyPage = () => {
         throw new Error(data.error || 'Incorrect passkey');
       }
 
-      if (data.success) {
-        sessionStorage.setItem(`room_auth_${selectedRoom._id}`, 'true');
-        sessionStorage.setItem(`room_name_${selectedRoom._id}`, selectedRoom.name);
-        if (data.isAdmin) {
-          sessionStorage.setItem(`room_admin_${selectedRoom._id}`, 'true');
-        }
-        setSelectedRoom(null);
-        navigate(`/room/${selectedRoom._id}`);
+      if (!data.success) {
+        throw new Error(data.error || 'Incorrect passkey');
       }
+
+      sessionStorage.setItem(`room_auth_${selectedRoom._id}`, 'true');
+      sessionStorage.setItem(`room_passkey_${selectedRoom._id}`, enteredPasskey.trim());
+      sessionStorage.setItem(`room_name_${selectedRoom._id}`, selectedRoom.name);
+      if (data.isAdmin) {
+        sessionStorage.setItem(`room_admin_${selectedRoom._id}`, 'true');
+      }
+      setSelectedRoom(null);
+      navigate(`/room/${selectedRoom._id}`);
     } catch (err) {
       setVerificationError(err.message);
     } finally {
@@ -283,8 +298,11 @@ const LobbyPage = () => {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  // Do not claim admin locally. AdminPage performs a
+                                  // server-verified ownership check, so a stale local
+                                  // flag can never grant access on its own.
                                   sessionStorage.setItem(`room_auth_${room._id}`, 'true');
-                                  sessionStorage.setItem(`room_admin_${room._id}`, 'true');
+                                  sessionStorage.removeItem(`room_admin_${room._id}`);
                                   navigate(`/room/${room._id}/manage`);
                                 }}
                                 className="px-3.5 py-2 bg-accent-gold hover:bg-gold-hover text-primary-dark font-bold uppercase tracking-wider rounded-lg text-[10px] transition-all cursor-pointer whitespace-nowrap"
@@ -309,20 +327,26 @@ const LobbyPage = () => {
                         value={roomName}
                         onChange={(e) => setRoomName(e.target.value)}
                         placeholder="e.g. BCL Season 5"
+                        minLength={MIN_ROOM_NAME}
+                        maxLength={MAX_ROOM_NAME}
                         className="w-full px-4 py-3 bg-primary-dark/80 rounded-lg border border-white/10 text-white focus:outline-none focus:border-accent-gold transition-all text-sm"
                       />
                     </div>
 
                     <div className="space-y-1">
-                      <label className="block text-[10px] uppercase font-bold text-gray-300 tracking-wider">Secret Room Passkey (PIN)</label>
+                      <label className="block text-[10px] uppercase font-bold text-gray-300 tracking-wider">Secret Room Passkey</label>
                       <input
                         type="password"
                         value={passkey}
                         onChange={(e) => setPasskey(e.target.value)}
-                        placeholder="e.g. 1234"
+                        placeholder="e.g. bcl-2026-final"
+                        minLength={MIN_PASSKEY}
+                        maxLength={MAX_PASSKEY}
                         className="w-full px-4 py-3 bg-primary-dark/80 rounded-lg border border-white/10 text-white focus:outline-none focus:border-accent-gold transition-all text-sm font-mono tracking-widest"
                       />
-                      <p className="text-[9px] text-gray-500 font-medium">Guests must enter this code to view the live dashboard.</p>
+                      <p className="text-[9px] text-gray-500 font-medium">
+                        At least {MIN_PASSKEY} characters. Guests must enter this code to view the live dashboard.
+                      </p>
                     </div>
 
                     {createError && (
@@ -369,8 +393,9 @@ const LobbyPage = () => {
                 type="password"
                 value={enteredPasskey}
                 onChange={(e) => setEnteredPasskey(e.target.value)}
-                placeholder="••••"
-                className="w-full px-5 py-3.5 bg-primary-dark/80 text-center text-xl font-bold tracking-[0.5em] rounded-xl border border-white/10 text-white focus:outline-none focus:border-accent-gold transition-all placeholder:text-gray-600"
+                placeholder="Room passkey"
+                maxLength={MAX_PASSKEY}
+                className="w-full px-5 py-3.5 bg-primary-dark/80 text-center text-xl font-bold tracking-[0.25em] rounded-xl border border-white/10 text-white focus:outline-none focus:border-accent-gold transition-all placeholder:text-gray-600 placeholder:tracking-normal placeholder:text-base placeholder:font-normal"
                 autoFocus
               />
 
@@ -385,7 +410,7 @@ const LobbyPage = () => {
                 disabled={verifying}
                 className="w-full py-3.5 bg-accent-gold hover:bg-gold-hover disabled:bg-gray-600 disabled:glow-none text-primary-dark font-bold rounded-xl tracking-widest font-sporty text-lg uppercase transition-all duration-300 hover:scale-[1.02] shadow-lg glow-gold cursor-pointer"
               >
-                {verifying ? 'Verifying PIN...' : 'Verify Passkey'}
+                {verifying ? 'Verifying...' : 'Verify Passkey'}
               </button>
             </form>
           </div>

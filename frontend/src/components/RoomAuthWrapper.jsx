@@ -53,23 +53,24 @@ const RoomAuthWrapper = ({ children }) => {
           }
         });
         console.log('[Wrapper Auth] verify-passkey status:', res.status);
-        if (res.ok) {
-          const data = await res.json();
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.success) {
           console.log('[Wrapper Auth] verify-passkey data:', data);
-          if (data.success) {
-            sessionStorage.setItem(`room_auth_${roomId}`, 'true');
-            if (data.isAdmin) {
-              console.log('[Wrapper Auth] User is admin, setting storage room_admin true');
-              sessionStorage.setItem(`room_admin_${roomId}`, 'true');
-            } else {
-              console.log('[Wrapper Auth] User is guest, removing room_admin');
-              sessionStorage.removeItem(`room_admin_${roomId}`);
-            }
-            setIsAuthenticated(true);
-            connectSocket();
-            return;
+          sessionStorage.setItem(`room_auth_${roomId}`, 'true');
+          if (data.isAdmin) {
+            console.log('[Wrapper Auth] User is admin, setting storage room_admin true');
+            sessionStorage.setItem(`room_admin_${roomId}`, 'true');
+          } else {
+            console.log('[Wrapper Auth] User is guest, removing room_admin');
+            sessionStorage.removeItem(`room_admin_${roomId}`);
           }
+          setIsAuthenticated(true);
+          connectSocket();
+          return;
         }
+        // A signed-in non-owner lands here and falls through to the passkey
+        // form, which is the correct outcome rather than an error.
+        console.log('[Wrapper Auth] Not authorised via Clerk, falling back to passkey');
       }
 
       // 3. Check if local sessionStorage already verified this room (for guests with passkeys)
@@ -83,6 +84,7 @@ const RoomAuthWrapper = ({ children }) => {
       }
     } catch (err) {
       console.error('Error verifying room credentials:', err);
+      setError('Could not verify this room. Check your connection and try again.');
     }
   };
 
@@ -126,22 +128,20 @@ const RoomAuthWrapper = ({ children }) => {
         body: JSON.stringify({ passkey: passkeyInput })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Incorrect passkey');
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || 'Incorrect passkey');
       }
 
-      if (data.success) {
-        sessionStorage.setItem(`room_auth_${roomId}`, 'true');
-        sessionStorage.setItem(`room_passkey_${roomId}`, passkeyInput);
-        sessionStorage.setItem(`room_name_${roomId}`, roomName);
-        if (data.isAdmin) {
-          sessionStorage.setItem(`room_admin_${roomId}`, 'true');
-        }
-        setIsAuthenticated(true);
-        connectSocket();
+      sessionStorage.setItem(`room_auth_${roomId}`, 'true');
+      sessionStorage.setItem(`room_passkey_${roomId}`, passkeyInput.trim());
+      sessionStorage.setItem(`room_name_${roomId}`, roomName);
+      if (data.isAdmin) {
+        sessionStorage.setItem(`room_admin_${roomId}`, 'true');
       }
+      setIsAuthenticated(true);
+      connectSocket();
     } catch (err) {
       setError(err.message);
     } finally {

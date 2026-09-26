@@ -6,6 +6,7 @@ import {
   getRules
 } from '../utils/localStorageHelper';
 import { socket } from '../utils/socket';
+import { spentPercentage } from '../utils/inputRules';
 import './TeamHubPage.css';
 
 const TeamHubPage = () => {
@@ -128,7 +129,7 @@ const TeamHubPage = () => {
   }
 
   // 2. DASHBOARD VIEW (Team Context Active)
-  const spendPercentage = ((activeTeam.initialBudget - activeTeam.budget) / activeTeam.initialBudget) * 100;
+  const spendPercentage = spentPercentage(activeTeam.initialBudget, activeTeam.budget);
   
   // Roster slot math
   const boughtA = activeTeamPlayers.filter(p => p.category === 'A').length;
@@ -253,7 +254,6 @@ const TeamHubPage = () => {
           <div className="flex-grow overflow-y-auto custom-scroll-container pr-1 space-y-4">
             {teams.filter(t => (t._id || t.id) !== (activeTeam._id || activeTeam.id)).map(t => {
               const oppPlayers = players.filter(p => p.status === 'Sold' && p.winningTeam === t.name);
-              const spent = t.initialBudget - t.budget;
               const emoji = getTeamEmoji(t.name);
               
               const oppA = oppPlayers.filter(p => p.category === 'A').length;

@@ -124,7 +124,7 @@ const SummaryPage = () => {
       <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         {teams.map(t => {
           const playersBought = players.filter(p => p.status === 'Sold' && p.winningTeam === t.name);
-          const totalSpent = t.initialBudget - t.budget;
+          const totalSpent = Math.max(0, Number(t.initialBudget) - Number(t.budget)) || 0;
 
           const catACount = playersBought.filter(p => p.category === 'A').length;
           const catBCount = playersBought.filter(p => p.category === 'B').length;

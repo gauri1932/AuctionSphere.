@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth, useUser, UserButton } from '@clerk/clerk-react';
 import {
@@ -6,6 +6,7 @@ import {
   parseCSV
 } from '../utils/localStorageHelper';
 import { validateBidSolvency } from '../utils/solvencyEngine';
+import { parseWholeMoney, nextBid, spentPercentage } from '../utils/inputRules';
 import { socket } from '../utils/socket';
 import { API_URL } from '../utils/apiConfig';
 import './AdminPage.css';
@@ -116,12 +117,23 @@ const AdminPage = () => {
   const [buyingTeamId, setBuyingTeamId] = useState('');
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Debounce handle so typing a bid amount does not emit one request per keystroke
+  const bidPriceTimer = useRef(null);
+
+  useEffect(() => () => {
+    if (bidPriceTimer.current) clearTimeout(bidPriceTimer.current);
+  }, []);
 
   // Queue Category filter state
   const [queueFilterCategory, setQueueFilterCategory] = useState('All');
 
   // Notification states
   const [notification, setNotification] = useState({ text: '', type: '' });
+  const notificationTimer = useRef(null);
+
+  useEffect(() => () => {
+    if (notificationTimer.current) clearTimeout(notificationTimer.current);
+  }, []);
 
   // Load all datasets from API via Socket
   const refreshAllState = () => {
@@ -172,14 +184,19 @@ const AdminPage = () => {
 
   // Sync soldPrice input field when auctionState's currentBid changes (if not actively typing/focused)
   useEffect(() => {
-    if (!isInputFocused && auctionState && auctionState.currentBid !== undefined) {
-      setSoldPrice(auctionState.currentBid);
-    }
-  }, [auctionState.currentBid, isInputFocused]);
+    if (isInputFocused) return;
+    // Only mirror a real, positive standing bid. Without this a 0 or missing
+    // currentBid would drop a bogus value straight into the input and the hammer.
+    const standing = parseWholeMoney(auctionState?.currentBid);
+    if (standing.ok) setSoldPrice(standing.value);
+  }, [auctionState?.currentBid, isInputFocused]);
 
   const showNotification = (text, type = 'success') => {
     setNotification({ text, type });
-    setTimeout(() => setNotification({ text: '', type: '' }), 4000);
+    // Errors usually ask the admin to do something, so give them longer to read.
+    const ttl = type === 'error' ? 7000 : 4000;
+    if (notificationTimer.current) clearTimeout(notificationTimer.current);
+    notificationTimer.current = setTimeout(() => setNotification({ text: '', type: '' }), ttl);
   };
 
   // Push Player to Live Stage
@@ -294,10 +311,10 @@ const AdminPage = () => {
       return;
     }
 
-    const isFirstBid = !auctionState.highestBidder;
-    const potentialBid = isFirstBid
-      ? (parseInt(soldPrice, 10) || 0)
-      : (parseInt(soldPrice, 10) || 0) + 50000;
+    // A bid must beat the standing bid, and the standing bid starts at the
+    // category base price, so we always add an increment. Sending the typed
+    // value verbatim is a guaranteed rejection on the opening bid.
+    const potentialBid = nextBid(soldPrice, auctionState.currentBid);
 
     const solvency = getTeamSolvency(team, potentialBid, activePlayerCat);
 
@@ -328,33 +345,43 @@ const AdminPage = () => {
     });
   };
 
-  // Handle manual bid price input change in real-time
+  // Handle manual bid price input change. The value is kept locally on every
+  // keystroke but only pushed to the server once it is a valid whole amount,
+  // otherwise typing "1500000" would emit 1, 15, 150 ... and drown the admin in
+  // rejection toasts.
   const handleBidPriceChange = (val) => {
     setSoldPrice(val);
-    const parsedVal = parseInt(val, 10) || 0;
 
-    // If there is an active leading bidder, check solvency before updating server
-    if (auctionState.highestBidder && auctionState.livePlayer) {
-      const leadingTeam = teams.find(t => t.name === auctionState.highestBidder);
-      if (leadingTeam) {
-        const solvency = getTeamSolvency(leadingTeam, parsedVal, auctionState.livePlayer.category);
-        if (!solvency.isAllowed) {
-          showNotification(solvency.rejectionMessage, 'error');
-          return;
+    const parsed = parseWholeMoney(val);
+    if (!parsed.ok) return;
+
+    if (bidPriceTimer.current) clearTimeout(bidPriceTimer.current);
+    bidPriceTimer.current = setTimeout(() => {
+      if (auctionState.highestBidder && auctionState.livePlayer) {
+        const leadingTeam = teams.find(t => t.name === auctionState.highestBidder);
+        if (leadingTeam) {
+          const solvency = getTeamSolvency(leadingTeam, parsed.value, auctionState.livePlayer.category);
+          if (!solvency.isAllowed) {
+            showNotification(solvency.rejectionMessage, 'error');
+            return;
+          }
         }
       }
-    }
 
-    // Update live bid price in real-time via Socket
-    socket.emit('updateCurrentBid', { bidAmount: parsedVal }, (res) => {
-      if (res.success) {
-        setAuctionState(res.data);
-      } else if (res.error === 'Unauthorized') {
-        setIsAdminRoomOwner(false);
-      } else if (res.error) {
-        showNotification(res.error, 'error');
-      }
-    });
+      socket.timeout(5000).emit('updateCurrentBid', { bidAmount: parsed.value }, (err, res) => {
+        if (err) {
+          showNotification('Bid update timed out. Check your connection.', 'error');
+          return;
+        }
+        if (res.success) {
+          setAuctionState(res.data);
+        } else if (res.error === 'Unauthorized') {
+          setIsAdminRoomOwner(false);
+        } else if (res.error) {
+          showNotification(res.error, 'error');
+        }
+      });
+    }, 400);
   };
 
   // Mark Active Player as SOLD
@@ -367,25 +394,40 @@ const AdminPage = () => {
       return;
     }
 
-    const price = parseInt(soldPrice, 10);
-    if (isNaN(price) || price <= 0) {
-      showNotification('Please enter a valid numeric bidding amount.', 'error');
+    const winningTeam = teams.find(t => (t._id || t.id) === buyingTeamId);
+    if (!winningTeam) {
+      showNotification('That team is no longer in this room. Pick another one.', 'error');
       return;
     }
 
-    const winningTeam = teams.find(t => (t._id || t.id) === buyingTeamId);
-    if (!winningTeam) return;
+    // The server decides the winner and the price from its own standing bid.
+    // Catching a stale selection here saves a pointless round trip and makes
+    // the cause obvious instead of surfacing a server-side rejection.
+    if (!auctionState.highestBidder) {
+      showNotification('No bids have been placed yet, so there is nobody to sell to.', 'error');
+      return;
+    }
+    if (auctionState.highestBidder !== winningTeam.name) {
+      showNotification(`The leading bid belongs to ${auctionState.highestBidder}. Refresh and try again.`, 'error');
+      return;
+    }
 
     // Hard Gate on Hammer Sold
     const activePlayerCat = auctionState.livePlayer.category;
-    const solvency = getTeamSolvency(winningTeam, price, activePlayerCat);
+    const standingBid = parseWholeMoney(auctionState.currentBid);
+    if (!standingBid.ok) {
+      showNotification('The standing bid is not a valid amount, so the player cannot be sold.', 'error');
+      return;
+    }
+    const solvency = getTeamSolvency(winningTeam, standingBid.value, activePlayerCat);
     if (!solvency.isAllowed) {
       showNotification(solvency.rejectionMessage, 'error');
       return;
     }
 
     setIsSubmitting(true);
-    socket.timeout(5000).emit('markPlayerSold', { buyingTeamId, price }, (err, res) => {
+    // No price is sent: the server derives it from the standing bid.
+    socket.timeout(5000).emit('markPlayerSold', { buyingTeamId }, (err, res) => {
       setIsSubmitting(false);
       if (err) {
         showNotification('Sold operation timed out. Please check connection.', 'error');
@@ -395,15 +437,25 @@ const AdminPage = () => {
         setPlayers(res.data.players);
         setTeams(res.data.teams);
         setAuctionState(res.data.state);
-        showNotification(`Hammer Down! ${res.data.state.livePlayer.name} SOLD to ${winningTeam.name} for ${formatRupees(price)}!`);
+        // Read the authoritative outcome off the server, never off local state.
+        const sold = res.data.state?.soldInfo;
+        const soldPlayer = res.data.players?.find(p => p._id === res.data.state?.livePlayer?._id);
+        const buyerName = sold?.teamName || winningTeam.name;
+        const soldFor = Number(sold?.price) || Number(soldPlayer?.finalPrice) || 0;
+        showNotification(`Hammer Down! ${soldPlayer?.name || 'Player'} SOLD to ${buyerName} for ${formatRupees(soldFor)}!`);
 
         // Auto revert display back to waiting and queue next player after 4 seconds
         setTimeout(() => {
           socket.timeout(5000).emit('clearLiveStage', (revertErr, revertRes) => {
-            if (revertErr) return;
+            if (revertErr) {
+              showNotification('Sold OK, but the live stage did not clear. Please clear it manually.', 'error');
+              return;
+            }
             if (revertRes.success) {
               setAuctionState(revertRes.data);
               pushNextRandomPlayer(res.data.players);
+            } else {
+              showNotification(revertRes?.error || 'Could not clear the live stage.', 'error');
             }
           });
         }, 4100);
@@ -558,12 +610,19 @@ const AdminPage = () => {
             category,
             basePrice,
             age,
-            status: 'Pending',
-            finalPrice: 0,
-            winningTeam: null,
             photo
           };
         });
+
+        const soldCount = players.filter(p => p.status === 'Sold').length;
+        if (soldCount > 0) {
+          const proceed = window.confirm(
+            `${soldCount} player${soldCount === 1 ? ' has' : 's have'} already been sold. ` +
+            'Uploading a roster replaces the whole list, so those sales and the money they recorded will be lost. ' +
+            'Use "Undo Sale" first if you want to keep them. Continue and wipe the auction history?'
+          );
+          if (!proceed) return;
+        }
 
         const confirmOverwrite = window.confirm(`Found ${importedPlayers.length} players. Click OK to overwrite current roster, or Cancel to merge them.`);
 
@@ -571,7 +630,11 @@ const AdminPage = () => {
         if (confirmOverwrite) {
           finalRoster = importedPlayers;
         } else {
-          finalRoster = [...players, ...importedPlayers];
+          // The upload endpoint replaces the roster and the server drops any
+          // status/finalPrice/winningTeam we send, so merging must not carry
+          // already-sold players back in: that would silently reset the ledger.
+          const unsold = players.filter(p => p.status !== 'Sold');
+          finalRoster = [...unsold, ...importedPlayers];
         }
 
         const token = await getToken();
@@ -615,9 +678,6 @@ const AdminPage = () => {
       category: newPlayerCategory,
       basePrice: parseInt(newPlayerBasePrice, 10) || (rules.basePrices?.[newPlayerCategory] || 1000000),
       age: newPlayerAge ? parseInt(newPlayerAge, 10) : null,
-      status: 'Pending',
-      finalPrice: 0,
-      winningTeam: null,
       photo: photoUrl
     };
 
@@ -648,10 +708,11 @@ const AdminPage = () => {
       return;
     }
 
+    // initialBudget is server-owned: it is always derived from budget so a
+    // team cannot raise its own spending cap.
     const newTeam = {
       name: newTeamName.trim(),
-      budget: parseInt(newTeamBudget, 10) || 10000000,
-      initialBudget: parseInt(newTeamBudget, 10) || 10000000
+      budget: parseInt(newTeamBudget, 10) || 10000000
     };
 
     socket.timeout(5000).emit('addTeam', newTeam, (err, res) => {
@@ -697,32 +758,46 @@ const AdminPage = () => {
       : 'This will delete all players and teams. Proceed?';
 
     if (window.confirm(confirmMsg)) {
+      // The server re-checks the room passkey as a second factor before a
+      // destructive reset. Owners who signed in with Clerk never typed the
+      // passkey, so ask for it instead of firing a request that must fail.
       const pass = sessionStorage.getItem(`room_passkey_${roomId}`) || '';
-      socket.timeout(5000).emit('systemReset', { confirm: true, securityPin: pass, type }, (err, res) => {
-        if (err) {
-          showNotification('Operation timed out. Please check connection.', 'error');
-          return;
-        }
-        if (res.success) {
-          if (isHard) {
-            setPlayers(res.data.players);
-            setTeams(res.data.teams);
-            setRules(res.data.rules);
-            setAuctionState(res.data.state);
-            showNotification('System restored to default settings.', 'warning');
-          } else {
-            setPlayers([]);
-            setTeams([]);
-            setAuctionState(res.data.state);
-            showNotification('All datasets wiped clean.', 'warning');
-          }
-        } else if (res.error === 'Unauthorized') {
-          setIsAdminRoomOwner(false);
-        } else {
-          showNotification(res.error, 'error');
-        }
-      });
+      if (!pass) {
+        const entered = window.prompt('Confirm the room passkey to continue with this reset:');
+        if (!entered) return;
+        sessionStorage.setItem(`room_passkey_${roomId}`, entered.trim());
+        doSystemReset(entered.trim(), type, isHard);
+        return;
+      }
+      doSystemReset(pass, type, isHard);
     }
+  };
+
+  const doSystemReset = (pass, type, isHard) => {
+    socket.timeout(5000).emit('systemReset', { confirm: true, securityPin: pass, type }, (err, res) => {
+      if (err) {
+        showNotification('Operation timed out. Please check connection.', 'error');
+        return;
+      }
+      if (res.success) {
+        if (isHard) {
+          setPlayers(res.data.players);
+          setTeams(res.data.teams);
+          setRules(res.data.rules);
+          setAuctionState(res.data.state);
+          showNotification('System restored to default settings.', 'warning');
+        } else {
+          setPlayers([]);
+          setTeams([]);
+          setAuctionState(res.data.state);
+          showNotification('All datasets wiped clean.', 'warning');
+        }
+      } else if (res.error === 'Unauthorized') {
+        setIsAdminRoomOwner(false);
+      } else {
+        showNotification(res.error, 'error');
+      }
+    });
   };
 
   // Save rules via Socket
@@ -909,6 +984,8 @@ const AdminPage = () => {
                               onFocus={() => setIsInputFocused(true)}
                               onBlur={() => setIsInputFocused(false)}
                               placeholder="Current Bid Price"
+                              step="1"
+                              min="1"
                               className="w-full max-w-sm px-4 py-3 bg-primary-dark border border-white/10 text-white font-bold rounded-lg focus:outline-none focus:border-accent-gold font-bold text-base"
                             />
                             {auctionState.bidHistory && auctionState.bidHistory.length > 0 && (
@@ -949,10 +1026,7 @@ const AdminPage = () => {
                                 const maxCatSlots = rules.slots?.[activePlayerCat] || 999;
                                 const isCatSlotsFull = catCount >= maxCatSlots;
 
-                                const isFirstBid = !auctionState.highestBidder;
-                                const potentialBid = isFirstBid 
-                                  ? (parseInt(soldPrice, 10) || 0)
-                                  : (parseInt(soldPrice, 10) || 0) + 50000;
+                                const potentialBid = nextBid(soldPrice, auctionState.currentBid);
                                 const solvency = getTeamSolvency(t, potentialBid, activePlayerCat);
                                 const isSolvent = !isMaxLimitReached && !isCatSlotsFull && solvency.isAllowed;
                                 const isLeading = auctionState.highestBidder === t.name;
@@ -1052,7 +1126,7 @@ const AdminPage = () => {
                     <p className="text-gray-500 col-span-2">No franchises registered. Visit Franchise tab to set them up.</p>
                   ) : (
                     teams.map(t => {
-                      const spendPercentage = ((t.initialBudget - t.budget) / t.initialBudget) * 100;
+                      const spendPercentage = spentPercentage(t.initialBudget, t.budget);
                       return (
                         <div key={t._id || t.id} className="bg-primary-dark/50 border border-white/5 rounded-xl p-4 flex flex-col justify-between">
                           <div className="flex justify-between items-center mb-2">

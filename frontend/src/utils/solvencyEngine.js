@@ -39,7 +39,21 @@ export function validateBidSolvency({
   proposedBidAmount = 0
 }) {
   const budget = Number(teamBudget) || 0;
-  const bidAmount = Number(proposedBidAmount) || 0;
+  const rawBid = Number(proposedBidAmount);
+  const bidAmount = Number.isFinite(rawBid) ? rawBid : 0;
+
+  // Shape check first. Without it a garbage bid coerces to 0, and 0 always
+  // passes a "<= maxBid" test, so the client would green-light a bid the server
+  // rejects. The server is the authority; this only avoids pointless round trips.
+  if (!Number.isFinite(rawBid) || !Number.isInteger(rawBid) || rawBid <= 0) {
+    return {
+      isAllowed: false,
+      maxBid: budget,
+      mandatoryReserve: 0,
+      remainingNeededPerCategory: {},
+      rejectionMessage: 'Enter a whole-number bid greater than zero.',
+    };
+  }
 
   // Normalize category configs into a uniform map of { minRequired, minBasePrice }
   const normalizedConfigs = {};
