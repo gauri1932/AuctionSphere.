@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser, useAuth } from '@clerk/clerk-react';
 import './LobbyPage.css';
@@ -27,15 +27,14 @@ const LobbyPage = () => {
   const { isLoaded: userLoaded, user } = useUser();
   const clerkLoaded = authLoaded && userLoaded;
 
-  // Fetch all rooms on boot
-  useEffect(() => {
-    fetchRooms();
-  }, []);
-
-  const fetchRooms = async () => {
+  const fetchRooms = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_URL}/rooms`);
+      const token = await getToken();
+      const headers = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(`${API_URL}/rooms`, { headers });
       if (!res.ok) throw new Error('Failed to load rooms');
       const data = await res.json();
       setRooms(data);
@@ -46,7 +45,15 @@ const LobbyPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [getToken]);
+
+  // Fetch all rooms once Clerk has settled, so the Authorization header is
+  // attached. Without it the server strips adminUserId and "My Managed Rooms"
+  // never matches.
+  useEffect(() => {
+    if (!clerkLoaded) return;
+    fetchRooms();
+  }, [clerkLoaded, fetchRooms]);
 
   // Handle Room Creation
   const handleCreateRoom = async (e) => {
@@ -203,14 +210,12 @@ const LobbyPage = () => {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {rooms.map((room) => {
-                const isOwner = user && room.adminUserId === user.id;
-                return (
-                  <div 
-                    key={room._id} 
-                    onClick={() => handleRoomClick(room)}
-                    className="glass-panel p-6 rounded-2xl border border-white/10 hover:border-accent-gold/40 hover:scale-[1.01] transition-all duration-300 cursor-pointer flex flex-col justify-between group relative overflow-hidden"
-                  >
+              {rooms.map((room) => (
+                <div 
+                  key={room._id} 
+                  onClick={() => handleRoomClick(room)}
+                  className="glass-panel p-6 rounded-2xl border border-white/10 hover:border-accent-gold/40 hover:scale-[1.01] transition-all duration-300 cursor-pointer flex flex-col justify-between group relative overflow-hidden"
+                >
                     {/* Glowing side accent */}
                     <div className="absolute top-0 bottom-0 left-0 w-1 bg-accent-gold/40 group-hover:bg-accent-gold transition-all"></div>
 
@@ -237,8 +242,8 @@ const LobbyPage = () => {
                       </span>
                     </div>
                   </div>
-                );
-              })}
+                ))
+              }
             </div>
           )}
         </div>
