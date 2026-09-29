@@ -586,4 +586,35 @@ router.post('/rooms/:roomId/reset', requireRoomAdmin, async (req, res) => {
     }
 });
 
+
+// --- ROOM DELETION API ---
+
+// DELETE: Destroy a room and every document scoped to it (Admin protected)
+router.delete('/rooms/:roomId', requireRoomAdmin, async (req, res) => {
+    try {
+        const { roomId } = req.params;
+
+        // req.room is already resolved and ownership-checked by requireRoomAdmin
+        await Promise.all([
+            Player.deleteMany({ room: roomId }),
+            Team.deleteMany({ room: roomId }),
+            Rule.deleteMany({ room: roomId }),
+            AuctionState.deleteMany({ room: roomId })
+        ]);
+
+        await req.room.deleteOne();
+
+        // Evict any live sockets still joined to the deleted room
+        const io = req.app.get('io');
+        if (io) {
+            io.in(roomId).socketsLeave(roomId);
+        }
+
+        res.json({ success: true, message: 'Room deleted successfully' });
+    } catch (err) {
+        console.error('Failed to delete room:', err);
+        res.status(500).json({ error: 'Could not delete the room' });
+    }
+});
+
 module.exports = router;

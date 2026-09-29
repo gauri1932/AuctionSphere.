@@ -22,6 +22,9 @@ const LobbyPage = () => {
   const [verifying, setVerifying] = useState(false);
   const [verificationError, setVerificationError] = useState('');
 
+  // Room Deletion State
+  const [deletingRoomId, setDeletingRoomId] = useState(null);
+
   const navigate = useNavigate();
   const { isLoaded: authLoaded, getToken } = useAuth();
   const { isLoaded: userLoaded, user } = useUser();
@@ -171,6 +174,37 @@ const LobbyPage = () => {
     }
   };
 
+  // Delete a managed room (server re-checks room ownership)
+  const handleDeleteRoom = async (room) => {
+    const confirmMsg = `Permanently delete "${room.name}"? This erases the room along with its players, teams, rules and auction state. This cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      setDeletingRoomId(room._id);
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/rooms/${room._id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || 'Failed to delete room');
+      }
+
+      // Drop every cached flag for the room so a later visit cannot resurrect it
+      ['room_auth', 'room_admin', 'room_passkey', 'room_name'].forEach(prefix => {
+        sessionStorage.removeItem(`${prefix}_${room._id}`);
+      });
+
+      setRooms(prev => prev.filter(r => r._id !== room._id));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingRoomId(null);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 relative select-none">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -295,25 +329,38 @@ const LobbyPage = () => {
                         <h4 className="font-sporty text-base text-gray-200 tracking-wide uppercase">My Managed Rooms</h4>
                         <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                           {myRooms.map(room => (
-                            <div key={room._id} className="flex justify-between items-center bg-primary-dark/60 border border-white/5 p-3 rounded-xl text-xs gap-3">
+                            <div key={room._id} className="flex justify-between items-center bg-primary-dark/60 border border-white/5 p-3 rounded-xl text-xs gap-2">
                               <div className="truncate min-w-0">
                                 <span className="font-bold text-white block truncate">{room.name}</span>
                                 <span className="text-[9px] text-gray-500 uppercase tracking-widest font-semibold">{room.status}</span>
                               </div>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  // Do not claim admin locally. AdminPage performs a
-                                  // server-verified ownership check, so a stale local
-                                  // flag can never grant access on its own.
-                                  sessionStorage.setItem(`room_auth_${room._id}`, 'true');
-                                  sessionStorage.removeItem(`room_admin_${room._id}`);
-                                  navigate(`/room/${room._id}/manage`);
-                                }}
-                                className="px-3.5 py-2 bg-accent-gold hover:bg-gold-hover text-primary-dark font-bold uppercase tracking-wider rounded-lg text-[10px] transition-all cursor-pointer whitespace-nowrap"
-                              >
-                                Manage ⚙️
-                              </button>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteRoom(room);
+                                  }}
+                                  disabled={deletingRoomId === room._id}
+                                  title="Delete this room"
+                                  className="px-2.5 py-2 bg-red-600/10 hover:bg-red-600/25 border border-red-500/30 text-red-400 hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed font-bold uppercase rounded-lg text-[10px] tracking-wider transition-all cursor-pointer"
+                                >
+                                  {deletingRoomId === room._id ? '...' : '🗑️'}
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    // Do not claim admin locally. AdminPage performs a
+                                    // server-verified ownership check, so a stale local
+                                    // flag can never grant access on its own.
+                                    sessionStorage.setItem(`room_auth_${room._id}`, 'true');
+                                    sessionStorage.removeItem(`room_admin_${room._id}`);
+                                    navigate(`/room/${room._id}/manage`);
+                                  }}
+                                  className="px-3.5 py-2 bg-accent-gold hover:bg-gold-hover text-primary-dark font-bold uppercase tracking-wider rounded-lg text-[10px] transition-all cursor-pointer whitespace-nowrap"
+                                >
+                                  Manage ⚙️
+                                </button>
+                              </div>
                             </div>
                           ))}
                         </div>
